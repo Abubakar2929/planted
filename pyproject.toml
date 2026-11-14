@@ -16,7 +16,7 @@ dependencies = [
     "pandas",
     "numpy",
     "scipy",
-    "statsmodels",
+    "statsmodels>=0.15",  # 0.14.x breaks on pandas 3
     "matplotlib",
     "datasketch",
     "sentence-transformers",

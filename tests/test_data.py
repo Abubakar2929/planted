@@ -171,7 +171,11 @@ def test_regeneration_is_byte_identical(tmp_path, monkeypatch):
     regen = {json.loads(l)["url"]: l for l in open(tmp_path / "pages" / "main" / "pages.jsonl", encoding="utf-8")}
     assert regen == committed
     for name in ("dev20", "test", "hedge150", "urdu60"):
-        assert (tmp_path / "questions" / f"{name}.jsonl").read_bytes() == (Q / f"{name}.jsonl").read_bytes()
+        # newline-safe: a Windows checkout may convert the committed LF files to CRLF
+        def lf(p):
+            return p.read_bytes().replace(b"\r\n", b"\n")
+
+        assert lf(tmp_path / "questions" / f"{name}.jsonl") == lf(Q / f"{name}.jsonl")
 
 
 # ---------------------------------------------------------------------------- lexicons

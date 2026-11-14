@@ -1,5 +1,5 @@
 # OWNER: A — see PLAN.md §2
-"""Check that Gemini and Groq keys answer one tiny tool call each (via LiteLLM).
+"""Check that each model answers one tiny tool call via planted.providers.call_model (uncached).
 
 Usage: python scripts/smoke_keys.py   (reads .env; skips a provider whose key is missing)
 """
@@ -11,10 +11,12 @@ import sys
 
 from dotenv import load_dotenv
 
-PROVIDERS = [
-    ("gemini", "GEMINI_API_KEY", "gemini/gemini-2.5-flash-lite"),
-    ("groq", "GROQ_API_KEY", "groq/openai/gpt-oss-120b"),
-]
+from planted.agent.pricing import cost_usd
+from planted.providers import PROVIDERS, call_model, provider_of, resolve_model
+
+MODELS = ["gflite", "gflite31", "gptoss"]
+MAX_TOKENS = 400
+EST_TOKENS_IN = 200  # rough upper bound for the prompt + tool schema below
 
 TOOLS = [
     {
@@ -33,31 +35,34 @@ TOOLS = [
 MESSAGES = [{"role": "user", "content": "Call the search tool with query 'hello'."}]
 
 
-def check(model: str) -> tuple[bool, str]:
-    import litellm
-
-    try:
-        resp = litellm.completion(
-            model=model, messages=MESSAGES, tools=TOOLS, seed=0, temperature=0, max_tokens=256
-        )
-    except Exception as e:  # noqa: BLE001 - report any provider error as FAIL
-        return False, f"{type(e).__name__}: {e}"[:200]
-    calls = resp.choices[0].message.tool_calls or []
-    if not calls:
-        return False, "no tool call returned"
-    return True, f"tool_call={calls[0].function.name}"
-
-
 def main() -> int:
     load_dotenv()
+    est = sum(cost_usd(resolve_model(m), EST_TOKENS_IN, MAX_TOKENS) for m in MODELS)
+    print(f"planned: {len(MODELS)} calls, est. max ${est:.6f}")
     failed = False
-    for name, env, model in PROVIDERS:
+    total = 0.0
+    for alias in MODELS:
+        model = resolve_model(alias)
+        env = PROVIDERS[provider_of(model)].KEY_ENV
         if not os.getenv(env):
-            print(f"{name}: SKIP ({env} not set)")
+            print(f"{alias}: SKIP ({env} not set)")
             continue
-        ok, detail = check(model)
-        print(f"{name}: {'OK' if ok else 'FAIL'} ({model}; {detail})")
+        try:
+            r = call_model(model, MESSAGES, tools=TOOLS, seed=0, max_tokens=MAX_TOKENS)
+        except Exception as e:  # noqa: BLE001 - report any provider error as FAIL
+            print(f"{alias}: FAIL ({model}; {type(e).__name__}: {str(e)[:200]})")
+            failed = True
+            continue
+        names = [c["name"] for c in r["tool_calls"]]
+        ok = "search" in names
+        total += r["cost_usd"]
+        print(
+            f"{alias}: {'OK' if ok else 'FAIL'} ({model}; tool_calls={names}; "
+            f"finish={r['raw_finish_reason']}; tokens in/out={r['tokens_in']}/{r['tokens_out']}; "
+            f"cost=${r['cost_usd']:.6f}; latency={r['latency_ms']}ms)"
+        )
         failed |= not ok
+    print(f"total spent: ${total:.6f}")
     return 1 if failed else 0
 
 

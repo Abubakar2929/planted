@@ -64,3 +64,55 @@ make_episode_id(cond, qid) -> "A-k3-wire-T1-en-none-gflite-s0-q017"
   `episode_id`, but the engine needs it to scope urls to the episode's pool. The engine uses
   `open_url(episode_id, url)`. This still passes the runtime Protocol check, which looks only
   at method names. Should the contract be updated with an `[ALL]` commit?
+
+## A2 done: providers, cache, pricing, logger
+
+Files: `planted/providers/{__init__,gemini,groq}.py`, `planted/agent/{pricing,cache,logger}.py`,
+`scripts/smoke_keys.py`, `tests/test_providers.py`, `tests/test_cache_logger.py`.
+
+### API
+
+```python
+from planted.providers import call_model, resolve_model, set_concurrency, normalise_tool_calls
+call_model(model, messages, tools=None, seed=0, temperature=0, max_tokens=400) -> dict
+#   {content: str, tool_calls: [{id, name, arguments: dict}], tokens_in, tokens_out,
+#    latency_ms, cost_usd, raw_finish_reason}
+#   aliases: gflite -> gemini/gemini-2.5-flash-lite, gflite31 -> gemini/gemini-3.1-flash-lite,
+#            gptoss -> groq/openai/gpt-oss-120b
+#   retries 429 / 5xx / timeout / connection errors, 6 tries, backoff 1,2,4,8,16 s (no jitter)
+#   concurrency: Gemini 8, Groq 4; set_concurrency("groq", 2) or PLANTED_CONCURRENCY_GROQ=2
+#   seed sent only if LiteLLM lists it as supported (it does for all three models today)
+
+from planted.agent.cache import call_model_cached, Cache, cache_key
+call_model_cached(model, messages, tools=None, seed=0, temperature=0, max_tokens=400, cache=None)
+#   .cache/llm.sqlite, key = sha256(canonical JSON of resolved model, seed, temperature,
+#   max_tokens, messages, tools). Hit -> stored dict, unchanged (original cost_usd/latency_ms,
+#   so rerun logs are byte-identical). Real spend this process: cache.spent_usd (misses only).
+
+from planted.agent.pricing import PRICES, cost_usd   # $ per 1M tokens (in, out); KeyError if unknown
+from planted.agent.logger import JsonlLogger, without_ts
+JsonlLogger(path).write(LogLine | dict)   # validates, sorted keys, (",",":"), UTF-8, "\n", flush
+without_ts(line) -> str                   # compare reruns with this (drops ts)
+```
+
+Notes:
+- `tool_calls` items carry the provider's `id` beyond `name`/`arguments`. The agent loop needs it
+  to send `role: tool` replies. On a cache hit the id is the stored one, so reruns stay stable.
+- The Groq gpt-oss-120b price (0.15 / 0.60) is **unverified**. Check the Groq console and
+  update `pricing.py` and `BUDGET.md`.
+- gpt-oss-120b is a reasoning model, so its reasoning tokens count against `max_tokens=400`.
+  Watch for `raw_finish_reason == "length"` in the pilot.
+
+### Smoke check (`python scripts/smoke_keys.py`, 2026-11-14)
+
+No `.env` was present on this machine, so nothing was called:
+
+```
+planned: 3 calls, est. max $0.001100
+gflite: SKIP (GEMINI_API_KEY not set)
+gflite31: SKIP (GEMINI_API_KEY not set)
+gptoss: SKIP (GROQ_API_KEY not set)
+total spent: $0.000000
+```
+
+TODO: rerun with keys in `.env` and paste the OK/FAIL lines here.

@@ -227,3 +227,6 @@ logs/
 results/raw/
 *.mp4
 *.mov
+
+# built scorecard (rebuild with: python site/build.py)
+site/dist/

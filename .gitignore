@@ -167,7 +167,7 @@ venv.bak/
 .ropeproject
 
 # mkdocs/Zensical documentation
-/site
+# /site  (disabled: site/ is our scorecard folder, PLAN.md §3)
 
 # mypy
 .mypy_cache/
@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- planted project rules (AGENTS.md §6) ---
+logs/
+.cache/
+*.sqlite
+.venv/
+results/raw/
+*.mp4
+*.mov

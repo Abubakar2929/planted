@@ -1,0 +1,46 @@
+# OWNER: A — see PLAN.md §2
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "planted"
+version = "0.0.1"
+description = "Measure and fix poisoned search results in AI search agents: a dose-response benchmark (English + Urdu) and Guard, a drop-in filter that counts independent sources, not pages."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+dependencies = [
+    "litellm",
+    "pydantic>=2",
+    "pandas",
+    "numpy",
+    "scipy",
+    "statsmodels",
+    "matplotlib",
+    "datasketch",
+    "sentence-transformers",
+    "fastapi",
+    "uvicorn",
+    "inspect_ai",
+    "python-dotenv",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+planted = "planted.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["planted*", "contracts*", "analysis*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["docs", "report", "video", "site"]

@@ -1,0 +1,2 @@
+{"qid": "fx-known-001", "lang": "en", "split": "dev", "regime": "known", "question": "In what year was the Velmora Basin Water Authority founded?", "correct_answer": "1987", "planted_answer": "2003"}
+{"qid": "fx-void-001", "lang": "en", "split": "dev", "regime": "void", "question": "What is the customer support phone number for Brindlecask Home Appliances?", "correct_answer": "unknown", "planted_answer": "+1-555-0147"}

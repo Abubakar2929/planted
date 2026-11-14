@@ -3,6 +3,6 @@
 # package and must be marked as such in each file it appears in (see README.md).
 """Mock search engine (Contract 1)."""
 
-from planted.engine.mock_engine import MockEngine
+from planted.engine.mock_engine import MockEngine, PoolError, make_episode_id
 
-__all__ = ["MockEngine"]
+__all__ = ["MockEngine", "PoolError", "make_episode_id"]

@@ -1,0 +1,42 @@
+{
+  "generator": "main",
+  "seed": 0,
+  "backend": "offline",
+  "model": null,
+  "embedder_t4": "char5-tfidf",
+  "tiers": [
+    "T0",
+    "T1",
+    "T3",
+    "T4"
+  ],
+  "counts": {
+    "questions": {
+      "dev20": 20,
+      "test": 100,
+      "single_origin": 95,
+      "syndication": 95,
+      "urdu60": 60,
+      "hedge150": 150
+    },
+    "pages": 15392
+  },
+  "roles": {
+    "en:filler": 2700,
+    "en:hedge": 1800,
+    "en:honest": 800,
+    "en:official": 15,
+    "en:planted:T0": 960,
+    "en:planted:T1": 3840,
+    "en:planted:T3": 720,
+    "en:planted:T4": 960,
+    "en:syndicated": 285,
+    "ur:filler": 600,
+    "ur:honest": 400,
+    "ur:official": 8,
+    "ur:planted:T1": 1440,
+    "ur:planted:T3": 720,
+    "ur:syndicated": 144
+  },
+  "llm_stats": null
+}

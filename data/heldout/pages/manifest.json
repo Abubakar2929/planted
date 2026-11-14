@@ -1,0 +1,55 @@
+{
+  "generator": "heldout",
+  "seed": 0,
+  "backend": "offline",
+  "model": null,
+  "template_bank": "data/heldout/templates_{en,ur}.json",
+  "embedder_t4": "char5-tfidf",
+  "questions_covered": {
+    "en_test": 100,
+    "ur_test": 60,
+    "t4": [
+      "pl-known-001",
+      "pl-known-002",
+      "pl-known-003",
+      "pl-known-005",
+      "pl-known-006",
+      "pl-known-007",
+      "pl-known-008",
+      "pl-known-009",
+      "pl-known-010",
+      "pl-known-011",
+      "pl-known-013",
+      "pl-known-014",
+      "pl-known-015",
+      "pl-known-017",
+      "pl-known-018",
+      "pl-known-019",
+      "pl-known-020",
+      "pl-known-021",
+      "pl-known-022",
+      "pl-known-023"
+    ]
+  },
+  "counts": {
+    "pages": 7071
+  },
+  "roles": {
+    "en:filler": 1000,
+    "en:honest": 670,
+    "en:official": 12,
+    "en:planted:T0": 800,
+    "en:planted:T1": 800,
+    "en:planted:T3": 640,
+    "en:planted:T4": 160,
+    "en:syndicated": 237,
+    "ur:filler": 600,
+    "ur:honest": 400,
+    "ur:official": 8,
+    "ur:planted:T0": 480,
+    "ur:planted:T1": 480,
+    "ur:planted:T3": 640,
+    "ur:syndicated": 144
+  },
+  "llm_stats": null
+}

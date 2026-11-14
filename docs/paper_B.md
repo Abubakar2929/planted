@@ -29,9 +29,9 @@ Register-ready Inspect task and a bilingual scorecard for fact-checkers.
 In December 2025, an AI answer engine told users that a scam phone number was an airline's official
 support line and attributed it to ten sources; attackers had seeded the number across compromised hosts
 so that AI systems would repeat it [Aurascape; verify]. The ten sources were one campaign. Two audits of
-live AI tools disagree on why such failures happen. NewsGuard's monitor found the leading tools repeating
+live AI tools disagree on why such failures happen. NewsGuard's audit of the ten leading AI tools found them repeating
 false claims 35% of the time in August 2025, up from 18%, while their non-response rate fell from 31% to
-0%, and it attributes the rise to live web search over a polluted ecosystem [NewsGuard; verify]. A Harvard
+0%, a shift it ties to the tools adopting real-time web searches [NewsGuard, 4 Sep 2025; checked]. A Harvard
 Kennedy School study found that only 5% of chatbot responses supported Kremlin disinformation and argued
 that the cause is *data voids*, topics with little reliable coverage, recommending warning banners
 [Alyukov et al., HKS Misinformation Review; verify]. The two explanations call for different fixes, and

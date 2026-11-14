@@ -27,9 +27,11 @@ from functools import cache
 from pathlib import Path
 
 from data.generator import embed
-from data.generator.generate import BankWriter, _role_counts, build_world, question, write_jsonl
+from data.generator.generate import BankWriter, _gen_counts, _role_counts, build_world, question, write_jsonl
+from data.generator.checks import rewrite_problem
 from data.generator.llm import (
     LLM,
+    QuotaExhausted,
     claim_survives,
     keys_present,
     rewrite_messages,
@@ -161,22 +163,34 @@ def render(fact, lang: str, rng: random.Random, *, label: str, answer: str | Non
 
 
 class HeldoutGenerator:
-    def __init__(self, seed: int, backend: str, model: str):
+    def __init__(self, seed: int, backend: str, model: str, llm_tiers=("T1", "T3", "T4"), llm_langs=("en", "ur"),
+                 max_calls: int | None = None):
         self.seed, self.backend = seed, backend
-        self.llm = LLM(model) if backend == "llm" else None
-        self.verifier = LLM(model, temperature=0.0) if backend == "llm" else None
+        self.llm = LLM(model, max_calls=max_calls) if backend == "llm" else None
+        self.verifier = LLM(model, temperature=0.0, max_calls=max_calls) if backend == "llm" else None
+        self.llm_tiers, self.llm_langs = set(llm_tiers), set(llm_langs)
+        self.reasons: dict[str, int] = {}
+
+    def _use_llm(self, tier: str, lang: str) -> bool:
+        return self.backend == "llm" and tier in self.llm_tiers and lang in self.llm_langs and not self.llm.exhausted
+
+    def _fail(self, reason: str) -> None:
+        self.reasons[reason] = self.reasons.get(reason, 0) + 1
 
     def rng(self, *p) -> random.Random:
         return random.Random("|".join(map(str, (self.seed, "heldout") + p)))
 
-    def planted(self, fact, lang, tier, s, cid, qtext, family=None, verbatim=None, rng=None, taken=None) -> dict:
+    def planted(self, fact, lang, tier, s, cid, qtext, family=None, verbatim=None, rng=None, taken=None,
+                variant: int = 0) -> dict:
         ans = fact.answer(lang, planted=True)
         rng = rng or self.rng(fact.fid, lang, tier, s)
-        if self.backend == "llm" and verbatim is None:
-            got = self._llm(fact, lang, ans, fact.answer(lang), qtext, self.rng(fact.fid, lang, tier, s, "llm"))
+        if verbatim is None and self._use_llm(tier, lang):
+            got = self._llm(fact, lang, ans, fact.answer(lang), qtext, self.rng(fact.fid, lang, tier, s, variant, "llm"))
             if got:
-                return render(fact, lang, rng, label="neutral", answer=ans, planted=True, tier=tier, cid=cid,
+                page = render(fact, lang, rng, label="neutral", answer=ans, planted=True, tier=tier, cid=cid,
                               family=family, llm_content=got, taken=taken)
+                page["_gen"] = "llm"
+                return page
         return render(fact, lang, rng, label="neutral", answer=ans, planted=True, tier=tier, cid=cid,
                       family=family, verbatim=verbatim, taken=taken)
 
@@ -185,11 +199,20 @@ class HeldoutGenerator:
         persona = r.choice(b["personas"])
         outlet = make_place(r).en + " " + r.choice(["Bulletin", "Newsline", "Forum", "Digest"])
         ctx = _ctx(b, fact, r, 3, fmap(fact, lang, None))
-        for _ in range(3):
-            out = self.llm.json(rewrite_messages(qtext, ans, fact.entity_text(lang), persona, outlet, lang, ctx),
-                                seed=r.randint(0, 2**31 - 1))
-            if out and isinstance(out.get("body"), str) and claim_survives(out["body"], ans, forbidden):
-                return str(out.get("title") or qtext), [p.strip() for p in out["body"].split("\n") if p.strip()]
+        try:
+            for _ in range(3):
+                out = self.llm.json(rewrite_messages(qtext, ans, fact.entity_text(lang), persona, outlet, lang, ctx),
+                                    seed=r.randint(0, 2**31 - 1))
+                if not out or not isinstance(out.get("body"), str):
+                    self._fail("bad json")
+                    continue
+                problem = rewrite_problem(out["body"] + "\n" + str(out.get("title", "")), lang, ans, forbidden)
+                if problem is None:
+                    return str(out.get("title") or qtext), [p.strip() for p in out["body"].split("\n") if p.strip()]
+                self._fail(problem)
+        except QuotaExhausted:
+            self._fail("quota")
+            return None
         self.llm.stats.fallbacks += 1
         return None
 
@@ -240,24 +263,36 @@ class HeldoutGenerator:
         cid = f"{qid}-T3-neutral"
         for s in range(N_PLANTED):
             pl = lang if s % 2 == 0 else other
-            p = self.planted(fact, pl, "T3", s, cid, qtext, taken=out.taken(qid))
-            if self.backend == "llm" and pl != lang:
-                tr = self._translate(fact, p, pl, s, cid)
-                p = tr or p
+            if pl != lang and self._use_llm("T3", lang):
+                # write the campaign page in the question's language, then rewrite it into the other one
+                src = self.planted(fact, lang, "T3", s, cid, qtext, variant=1)
+                p = self._translate(fact, src, pl, s, cid, out.taken(qid)) or self.planted(
+                    fact, pl, "T3", s, cid, qtext, taken=out.taken(qid))
+            else:
+                p = self.planted(fact, pl, "T3", s, cid, qtext, taken=out.taken(qid))
             out.add(p, qid, "planted", "T3", "neutral", s)
         if t4:
             self._t4(fact, lang, out, qid, qtext)
 
-    def _translate(self, fact, page, pl, s, cid):
+    def _translate(self, fact, page, pl, s, cid, taken=None):
         target = fact.answer(pl, planted=True)
-        res = self.llm.json(translate_messages(page["title"], page["body"], target, pl),
-                            seed=self.rng(fact.fid, "T3tr", s).randint(0, 2**31 - 1))
-        if not res or not claim_survives(str(res.get("body", "")), target, fact.answer(pl)):
+        try:
+            res = self.llm.json(translate_messages(page["title"], page["body"], target, pl),
+                                seed=self.rng(fact.fid, "T3tr", s).randint(0, 2**31 - 1))
+        except QuotaExhausted:
+            self._fail("quota")
+            return None
+        problem = "bad json" if not res else rewrite_problem(str(res.get("body", "")), pl, target, fact.answer(pl))
+        if problem:
+            self._fail(problem)
             self.llm.stats.fallbacks += 1
             return None
-        return render(fact, pl, self.rng(fact.fid, pl, "T3", s), label="neutral", answer=target, planted=True,
-                      tier="T3", cid=cid, llm_content=(str(res.get("title") or page["title"]),
-                                                       [x.strip() for x in str(res["body"]).split("\n") if x.strip()]))
+        page = render(fact, pl, self.rng(fact.fid, pl, "T3", s), label="neutral", answer=target, planted=True,
+                      tier="T3", cid=cid, taken=taken,
+                      llm_content=(str(res.get("title") or page["title"]),
+                                   [x.strip() for x in str(res["body"]).split("\n") if x.strip()]))
+        page["_gen"] = "llm"
+        return page
 
     def _t4(self, fact, lang, out, qid, qtext):
         cid, ans, chosen = f"{qid}-T4-neutral", fact.answer(lang, planted=True), []
@@ -265,11 +300,15 @@ class HeldoutGenerator:
             cands = []
             for c in range(T4_CANDIDATES):
                 p = self.planted(fact, lang, "T4", s, cid, qtext, rng=self.rng(fact.fid, lang, "T4", s, c),
-                                 taken=out.taken(qid))
+                                 taken=out.taken(qid), variant=c)
                 if not claim_survives(p["body"], ans, fact.answer(lang)):
                     continue
-                if self.backend == "llm":
-                    v = self.verifier.json(verify_messages(qtext, ans, p["body"]), seed=1000 * s + c)
+                if p.get("_gen") == "llm":
+                    try:
+                        v = self.verifier.json(verify_messages(qtext, ans, p["body"]), seed=1000 * s + c)
+                    except QuotaExhausted:
+                        v = {"asserts": True}  # already passed the deterministic claim checks
+                        self._fail("quota")
                     if not (v and v.get("asserts") is True):
                         continue
                 cands.append(p)
@@ -280,19 +319,23 @@ class HeldoutGenerator:
             out.add(cands[i], qid, "planted", "T4", "neutral", s)
 
 
-def run(seed: int, backend: str, model: str, out_dir: Path) -> dict:
+def run(seed: int, backend: str, model: str, out_dir: Path, llm_tiers=("T1", "T3", "T4"),
+        llm_langs=("en", "ur"), max_calls: int | None = None) -> dict:
     if backend == "llm" and not keys_present(model):
         sys.exit(f"--backend llm needs an API key for {model} in .env")
     facts, split, urdu, _ = build_world(seed)
     test = [f for f in facts if split[f.fid] == "test"]
     t4_ids = {f.fid for f in test if f.regime == "known"}
     t4_ids = set(sorted(t4_ids)[:N_T4_QUESTIONS])
-    gen = HeldoutGenerator(seed, backend, model)
+    gen = HeldoutGenerator(seed, backend, model, llm_tiers, llm_langs, max_calls)
     out = BankWriter()
     for f in test:
         gen.fact_pages(f, "en", out, f.fid, question(f, "en", "test")["question"], f.fid in t4_ids)
         if f.fid in urdu:
             gen.fact_pages(f, "ur", out, f.fid + "-ur", question(f, "ur", "test")["question"], False)
+        if gen.llm:
+            print(f"[progress] {f.fid} done; llm calls={gen.llm.stats.calls} cache_hits={gen.llm.stats.cache_hits}"
+                  f" exhausted={gen.llm.exhausted}", flush=True)
     pages_dir = out_dir / "pages"
     write_jsonl(pages_dir / "pages.jsonl", out.pages)
     write_jsonl(pages_dir / "index.jsonl", out.index)
@@ -301,7 +344,9 @@ def run(seed: int, backend: str, model: str, out_dir: Path) -> dict:
                 "questions_covered": {"en_test": len(test), "ur_test": len([f for f in test if f.fid in urdu]),
                                       "t4": sorted(t4_ids)},
                 "counts": {"pages": len(out.pages)}, "roles": _role_counts(out.index),
-                "llm_stats": gen.llm.stats.__dict__ if gen.llm else None}
+                "llm_stats": gen.llm.stats.__dict__ if gen.llm else None,
+                "llm_scope": {"tiers": sorted(llm_tiers), "langs": sorted(llm_langs)} if backend == "llm" else None,
+                "written_by": _gen_counts(out.index), "llm_rejections": gen.reasons or None}
     (pages_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return manifest
 
@@ -312,8 +357,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--backend", choices=["offline", "llm"], default="offline")
     ap.add_argument("--model", default="groq/openai/gpt-oss-120b")
     ap.add_argument("--out", type=Path, default=HERE)
+    ap.add_argument("--llm-tiers", nargs="*", default=["T1", "T3", "T4"], choices=["T1", "T3", "T4"])
+    ap.add_argument("--llm-langs", nargs="*", default=["en", "ur"], choices=["en", "ur"])
+    ap.add_argument("--max-calls", type=int, default=None, help="stop making new LLM calls after N (free tiers)")
     a = ap.parse_args(argv)
-    m = run(a.seed, a.backend, a.model, a.out)
+    m = run(a.seed, a.backend, a.model, a.out, a.llm_tiers, a.llm_langs, a.max_calls)
     print(json.dumps({k: m[k] for k in ("counts", "roles")}, indent=1))
     return 0
 

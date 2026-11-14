@@ -31,14 +31,9 @@ import sys
 from pathlib import Path
 
 from data.generator import embed
-from data.generator.llm import (
-    LLM,
-    claim_survives,
-    keys_present,
-    rewrite_messages,
-    translate_messages,
-    verify_messages,
-)
+from data.generator.checks import rewrite_problem
+from data.generator.llm import (LLM, QuotaExhausted, claim_survives, keys_present, rewrite_messages,
+                                translate_messages, verify_messages)
 from data.generator.render import (
     core_paragraph,
     load_bank,
@@ -131,6 +126,7 @@ class BankWriter:
         return self._domains.setdefault(qid.removesuffix("-ur"), set())
 
     def add(self, page: dict, qid: str, role: str, tier=None, label=None, slot=None, hedge=None):
+        gen = page.pop("_gen", "template")
         url = page["url"]
         n = 1
         while url in self.urls:  # deterministic de-duplication of colliding slugs
@@ -140,42 +136,63 @@ class BankWriter:
         self.urls.add(url)
         self.pages.append(page)
         self.index.append({"qid": qid, "url": url, "role": role, "tier": tier, "label": label,
-                           "slot": slot, "lang": page["lang"], "hedge": hedge})
+                           "slot": slot, "lang": page["lang"], "hedge": hedge, "gen": gen})
 
 
 class Generator:
-    def __init__(self, seed: int, backend: str, model: str, bank_name: str = "main"):
+    def __init__(self, seed: int, backend: str, model: str, bank_name: str = "main",
+                 llm_tiers: tuple[str, ...] = ("T1", "T3", "T4"), llm_langs: tuple[str, ...] = ("en", "ur"),
+                 max_calls: int | None = None):
         self.seed = seed
         self.backend = backend
         self.bank_name = bank_name
         self.banks = {lang: load_bank(bank_name, lang) for lang in ("en", "ur")}
-        self.llm = LLM(model) if backend == "llm" else None
-        self.verifier = LLM(model, temperature=0.0) if backend == "llm" else None
+        self.llm = LLM(model, max_calls=max_calls) if backend == "llm" else None
+        self.verifier = LLM(model, temperature=0.0, max_calls=max_calls) if backend == "llm" else None
+        self.llm_tiers = set(llm_tiers)
+        self.llm_langs = set(llm_langs)
+        self.reasons: dict[str, int] = {}
+
+    def _use_llm(self, tier: str, lang: str) -> bool:
+        return self.backend == "llm" and tier in self.llm_tiers and lang in self.llm_langs and not self.llm.exhausted
+
+    def _fail(self, reason: str) -> None:
+        self.reasons[reason] = self.reasons.get(reason, 0) + 1
 
     def rng(self, *parts) -> random.Random:
         return random.Random("|".join(str(p) for p in (self.seed, self.bank_name) + parts))
 
     # -- LLM rewriting with claim survival; falls back to the offline page on failure ----------
-    def _llm_content(self, fact, lang, answer, forbidden, persona_rng, offline_page, qtext) -> tuple[list[str], str] | None:
+    def _llm_content(self, fact, lang, answer, forbidden, persona_rng, qtext) -> tuple[list[str], str] | None:
+        """LLM-written article text. Prompt and seed do not depend on the label, so one cached body serves
+        every label's outlet wrapper (the label is carried by the outlet, as in the offline renderer)."""
         bank = self.banks[lang]
         persona = persona_rng.choice(bank["personas"])
-        outlet = offline_page["body"].split("\n")[0]
-        ctx = [c for c in offline_page["body"].split("\n")[4:-2] if answer not in c][:4]
-        for attempt in range(3):
-            seed = persona_rng.randint(0, 2**31 - 1)
-            out = self.llm.json(rewrite_messages(qtext, answer, fact.entity_text(lang), persona, outlet,
-                                                 lang, ctx), seed=seed)
-            if not out or not isinstance(out.get("body"), str):
-                continue
-            body = out["body"].strip()
-            if claim_survives(body, answer, forbidden):
-                paras = [p.strip() for p in body.split("\n") if p.strip()]
-                return paras, str(out.get("title") or offline_page["title"]).strip()
+        from data.generator.render import _context, fill_map
+
+        ctx = _context(bank, fact, persona_rng, 4, fill_map(fact, lang, None))
+        try:
+            for _attempt in range(3):
+                seed = persona_rng.randint(0, 2**31 - 1)
+                out = self.llm.json(rewrite_messages(qtext, answer, fact.entity_text(lang), persona, "",
+                                                     lang, ctx), seed=seed)
+                if not out or not isinstance(out.get("body"), str):
+                    self._fail("bad json")
+                    continue
+                body = out["body"].strip()
+                problem = rewrite_problem(body + "\n" + str(out.get("title", "")), lang, answer, forbidden)
+                if problem is None:
+                    paras = [p.strip() for p in body.split("\n") if p.strip()]
+                    return paras, str(out.get("title") or "").strip() or None
+                self._fail(problem)
+        except QuotaExhausted:
+            self._fail("quota")
+            return None
         self.llm.stats.fallbacks += 1
         return None
 
     def _planted_page(self, fact, lang, label, tier, slot, cid, qtext, stem=None, family_idx=None,
-                      core=None, rng=None, taken=None) -> dict:
+                      core=None, rng=None, taken=None, variant: int = 0) -> dict:
         bank = self.banks[lang]
         answer = fact.answer(lang, planted=True)
         forbidden = fact.answer(lang)
@@ -184,9 +201,10 @@ class Generator:
         page = make_page(fact=fact, bank=bank, lang=lang, rng=rng, label=label, role="planted",
                          planted=True, campaign_id=cid, tier=tier, answer=answer, stem=stem,
                          family_idx=family_idx, core=core, taken=taken)
-        if self.backend == "llm" and core is None:
-            got = self._llm_content(fact, lang, answer, forbidden, self.rng(fact.fid, lang, tier, label, slot, "llm"),
-                                    page, qtext)
+        page["_gen"] = "template"
+        if core is None and self._use_llm(tier, lang):
+            got = self._llm_content(fact, lang, answer, forbidden,
+                                    self.rng(fact.fid, lang, tier, slot, variant, "llm"), qtext)
             if got:
                 paras, title = got
                 rng2 = random.Random()
@@ -194,6 +212,7 @@ class Generator:
                 page = make_page(fact=fact, bank=bank, lang=lang, rng=rng2, label=label, role="planted",
                                  planted=True, campaign_id=cid, tier=tier, answer=answer, stem=stem,
                                  family_idx=family_idx, content_override=paras, title_override=title)
+                page["_gen"] = "llm"
         return page
 
     def fact_pages(self, fact, lang: str, out: BankWriter, qid: str, qtext: str, tiers: list[str]) -> None:
@@ -243,7 +262,7 @@ class Generator:
             for s in range(N_PLANTED):
                 plang = lang if s % 2 == 0 else other
                 p = self._planted_page(fact, plang, "neutral", "T3", s, cid, qtext, taken=out.taken(qid))
-                if self.backend == "llm" and plang != lang:
+                if plang != lang and self._use_llm("T3", lang):
                     p = self._translate(fact, p, plang, lang, s, cid) or p
                 out.add(p, qid, "planted", "T3", "neutral", s)
         if "T4" in tiers:
@@ -252,16 +271,25 @@ class Generator:
     def _translate(self, fact, page, plang, src_lang, slot, cid):
         """LLM path for T3: write in the source language, then rewrite into the other language."""
         answer_target = fact.answer(plang, planted=True)
-        src = self._planted_page(fact, src_lang, "neutral", "T3-src", slot, cid, "")
-        out = self.llm.json(translate_messages(src["title"], src["body"], answer_target, plang),
-                            seed=self.rng(fact.fid, "T3-tr", slot).randint(0, 2**31 - 1))
-        if not out or not claim_survives(str(out.get("body", "")), answer_target, fact.answer(plang)):
+        src = self._planted_page(fact, src_lang, "neutral", "T3", slot, cid, "", variant=1)
+        try:
+            out = self.llm.json(translate_messages(src["title"], src["body"], answer_target, plang),
+                                seed=self.rng(fact.fid, "T3-tr", slot).randint(0, 2**31 - 1))
+        except QuotaExhausted:
+            self._fail("quota")
+            return None
+        problem = "bad json" if not out else rewrite_problem(str(out.get("body", "")), plang, answer_target,
+                                                               fact.answer(plang))
+        if problem:
+            self._fail(problem)
             self.llm.stats.fallbacks += 1
             return None
         paras = [x.strip() for x in str(out["body"]).split("\n") if x.strip()]
-        return make_page(fact=fact, bank=self.banks[plang], lang=plang, rng=self.rng(fact.fid, plang, "T3", "neutral", slot),
+        page = make_page(fact=fact, bank=self.banks[plang], lang=plang, rng=self.rng(fact.fid, plang, "T3", "neutral", slot),
                          label="neutral", role="planted", planted=True, campaign_id=cid, tier="T3",
                          answer=answer_target, content_override=paras, title_override=str(out.get("title") or src["title"]))
+        page["_gen"] = "llm"
+        return page
 
     def _t4(self, fact, lang, out, qid, qtext):
         """Adaptive: per slot, keep the candidate least similar to the campaign pages chosen so far."""
@@ -272,10 +300,10 @@ class Generator:
             cands = []
             for c in range(T4_CANDIDATES):
                 p = self._planted_page(fact, lang, "neutral", "T4", s, cid, qtext,
-                                       rng=self.rng(fact.fid, lang, "T4", s, c), taken=out.taken(qid))
+                                       rng=self.rng(fact.fid, lang, "T4", s, c), taken=out.taken(qid), variant=c)
                 if not claim_survives(p["body"], answer, fact.answer(lang)):
                     continue
-                if self.backend == "llm" and not self._verified(qtext, answer, p["body"], s, c):
+                if p.get("_gen") == "llm" and not self._verified(qtext, answer, p["body"], s, c):
                     continue
                 cands.append(p)
             if not cands:
@@ -285,7 +313,11 @@ class Generator:
             out.add(cands[pick], qid, "planted", "T4", "neutral", s)
 
     def _verified(self, qtext, answer, body, s, c) -> bool:
-        res = self.verifier.json(verify_messages(qtext, answer, body), seed=1000 * s + c)
+        try:
+            res = self.verifier.json(verify_messages(qtext, answer, body), seed=1000 * s + c)
+        except QuotaExhausted:
+            self._fail("quota")
+            return True  # keep the candidate; it already passed the deterministic claim checks
         return bool(res and res.get("asserts") is True)
 
     def hedge_pages(self, claim, out: BankWriter, lang: str = "en") -> None:
@@ -312,12 +344,13 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 def run(seed: int, backend: str, model: str, out_dir: Path, only: set[str] | None = None,
-        tiers: list[str] | None = None) -> dict:
+        tiers: list[str] | None = None, llm_tiers=("T1", "T3", "T4"), llm_langs=("en", "ur"),
+        max_calls: int | None = None) -> dict:
     tiers = tiers or ["T0", "T1", "T3", "T4"]
     if backend == "llm" and not keys_present(model):
         sys.exit(f"--backend llm needs an API key for {model} in .env (see .env.example)")
     facts, split, urdu, hedges = build_world(seed)
-    gen = Generator(seed, backend, model)
+    gen = Generator(seed, backend, model, llm_tiers=tuple(llm_tiers), llm_langs=tuple(llm_langs), max_calls=max_calls)
 
     qs = {"dev20": [], "test": [], "single_origin": [], "syndication": [], "urdu60": [], "hedge150": []}
     for f in facts:
@@ -342,6 +375,9 @@ def run(seed: int, backend: str, model: str, out_dir: Path, only: set[str] | Non
         if f.fid in urdu:
             ur_q = question(f, "ur", split[f.fid])
             gen.fact_pages(f, "ur", bank, f.fid + "-ur", ur_q["question"], [t for t in tiers if t in ("T1", "T3")])
+        if gen.llm:
+            print(f"[progress] {f.fid} done; llm calls={gen.llm.stats.calls} cache_hits={gen.llm.stats.cache_hits}"
+                  f" exhausted={gen.llm.exhausted}", flush=True)
     for h in hedges:
         if only and h.hid not in only:
             continue
@@ -358,9 +394,21 @@ def run(seed: int, backend: str, model: str, out_dir: Path, only: set[str] | Non
         "embedder_t4": embed.backend_name(), "tiers": tiers,
         "counts": {"questions": {k: len(v) for k, v in qs.items()}, "pages": len(bank.pages)},
         "roles": _role_counts(bank.index), "llm_stats": stats,
+        "llm_scope": {"tiers": sorted(llm_tiers), "langs": sorted(llm_langs)} if backend == "llm" else None,
+        "written_by": _gen_counts(bank.index), "llm_rejections": gen.reasons or None,
     }
     (pages_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return manifest
+
+
+def _gen_counts(index: list[dict]) -> dict:
+    """Planted pages written by the LLM vs the template renderer, per language and tier."""
+    out: dict[str, dict[str, int]] = {}
+    for r in index:
+        if r["role"] == "planted":
+            d = out.setdefault(f"{r['lang']}:{r['tier']}", {"llm": 0, "template": 0})
+            d[r.get("gen", "template")] += 1
+    return dict(sorted(out.items()))
 
 
 def _role_counts(index: list[dict]) -> dict:
@@ -375,12 +423,18 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--backend", choices=["offline", "llm"], default="offline")
-    ap.add_argument("--model", default="gemini/gemini-2.5-flash-lite")
+    # gemini-2.5-flash-lite is closed to new API users (404 "no longer available to new users", 2026-11-14)
+    ap.add_argument("--model", default="gemini/gemini-3.1-flash-lite")
+    ap.add_argument("--llm-tiers", nargs="*", default=["T1", "T3", "T4"], choices=["T1", "T3", "T4"],
+                    help="tiers whose text the LLM writes (others use templates)")
+    ap.add_argument("--llm-langs", nargs="*", default=["en", "ur"], choices=["en", "ur"])
+    ap.add_argument("--max-calls", type=int, default=None, help="stop making new LLM calls after N (free tiers)")
     ap.add_argument("--out", type=Path, default=DATA)
     ap.add_argument("--only", nargs="*", help="generate pages for these qids only (debug)")
     ap.add_argument("--tiers", nargs="*", choices=["T0", "T1", "T3", "T4"])
     a = ap.parse_args(argv)
-    m = run(a.seed, a.backend, a.model, a.out, set(a.only) if a.only else None, a.tiers)
+    m = run(a.seed, a.backend, a.model, a.out, set(a.only) if a.only else None, a.tiers,
+            a.llm_tiers, a.llm_langs, a.max_calls)
     print(json.dumps(m["counts"], indent=1))
     if m["llm_stats"]:
         print("llm:", m["llm_stats"])

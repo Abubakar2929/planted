@@ -25,10 +25,25 @@ from pathlib import Path
 CACHE_PATH = Path(".cache") / "data_llm_cache.sqlite"
 
 # Approximate list prices (USD per 1M tokens) for spend logging; see BUDGET.md / docs/plan-v2.2.md.
+# On a free tier the actual spend is $0; the estimate is still logged.
 PRICES = {
     "gemini/gemini-2.5-flash-lite": (0.10, 0.40),
+    "gemini/gemini-3.1-flash-lite": (0.25, 1.50),
     "groq/openai/gpt-oss-120b": (0.15, 0.60),
 }
+
+# Minimum seconds between calls per provider, sized for free tiers (Groq free: 1,000 requests/day and
+# 8,000 tokens/min, measured from its x-ratelimit headers; ~1,100 tokens/call -> ~7 calls/min).
+# Override with PLANTED_LLM_MIN_INTERVAL.
+MIN_INTERVAL = {"groq": 9.0, "gemini": 4.5}
+
+
+class QuotaExhausted(RuntimeError):
+    """The provider's daily quota is used up: stop calling it; rerun later (the cache keeps finished work)."""
+
+
+class PermanentLLMError(RuntimeError):
+    """A request that will never succeed as sent (unknown model, bad key, unsupported parameter)."""
 
 
 def cache_key(model: str, seed: int, messages: list[dict], tools: list[dict] | None = None) -> str:
@@ -40,7 +55,7 @@ def cache_key(model: str, seed: int, messages: list[dict], tools: list[dict] | N
 class _LocalCache:
     def __init__(self, path: Path = CACHE_PATH):
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.con = sqlite3.connect(str(path))
+        self.con = sqlite3.connect(str(path), timeout=60)  # two generator processes may share it
         self.con.execute("CREATE TABLE IF NOT EXISTS calls (key TEXT PRIMARY KEY, response TEXT)")
 
     def get(self, key: str) -> dict | None:
@@ -78,12 +93,25 @@ class LLMStats:
 class LLM:
     """Seeded, cached chat completion returning parsed JSON."""
 
-    def __init__(self, model: str, temperature: float = 0.9, complete_fn=None):
+    def __init__(self, model: str, temperature: float = 0.9, complete_fn=None, max_calls: int | None = None):
         self.model = model
         self.temperature = temperature
         self.cache = _open_cache()
         self.stats = LLMStats()
         self._complete = complete_fn  # injectable for tests; default LiteLLM
+        self.max_calls = max_calls    # stop making new (uncached) calls after this many in one run
+        self.exhausted = False        # set once the daily quota or max_calls is hit; later calls raise at once
+        provider = model.split("/")[0]
+        self.min_interval = float(os.environ.get("PLANTED_LLM_MIN_INTERVAL", MIN_INTERVAL.get(provider, 0.0)))
+        self._last = 0.0
+
+    def _kwargs(self) -> dict:
+        kw = {"response_format": {"type": "json_object"}, "timeout": 90, "num_retries": 0}
+        if self.model.startswith("groq/openai/gpt-oss"):
+            kw["reasoning_effort"] = "low"  # fewer hidden reasoning tokens: fits the free per-minute budget
+        if "3.5-flash" not in self.model:   # Gemini 3.5 Flash-Lite rejects temperature
+            kw["temperature"] = self.temperature
+        return kw
 
     def _call(self, messages: list[dict], seed: int) -> dict:
         if self._complete is not None:
@@ -96,20 +124,38 @@ class LLM:
             pass
         import litellm
 
-        for attempt in range(4):
+        litellm.suppress_debug_info = True
+        waited = 0.0
+        attempt = 0
+        while True:
+            gap = self.min_interval - (time.monotonic() - self._last)
+            if gap > 0:
+                time.sleep(gap)
+            self._last = time.monotonic()
             try:
-                resp = litellm.completion(model=self.model, messages=messages, seed=seed,
-                                          temperature=self.temperature, timeout=60,
-                                          response_format={"type": "json_object"})
+                resp = litellm.completion(model=self.model, messages=messages, seed=seed, **self._kwargs())
                 usage = getattr(resp, "usage", None)
                 return {"content": resp.choices[0].message.content or "",
                         "tokens_in": getattr(usage, "prompt_tokens", 0) or 0,
                         "tokens_out": getattr(usage, "completion_tokens", 0) or 0}
-            except Exception:
-                if attempt == 3:
-                    raise
-                time.sleep(2 ** attempt)
-        raise RuntimeError("unreachable")
+            except (litellm.NotFoundError, litellm.AuthenticationError, litellm.UnsupportedParamsError,
+                    litellm.PermissionDeniedError) as e:
+                raise PermanentLLMError(f"{type(e).__name__}: {_redact(e)}") from None
+            except litellm.RateLimitError as e:
+                msg = str(e).lower()
+                if any(s in msg for s in ("per day", "requests per day", "daily", "rpd", "quota exceeded for metric")):
+                    raise QuotaExhausted(f"{self.model}: daily quota reached") from None
+                pause = min(90.0, 10.0 * (attempt + 1))
+                waited += pause
+                if waited > 1800:  # 30 min of continuous rate limiting: treat as exhausted
+                    raise QuotaExhausted(f"{self.model}: rate-limited for 30 min") from None
+                time.sleep(pause)
+            except (litellm.Timeout, litellm.APIConnectionError, litellm.InternalServerError,
+                    litellm.ServiceUnavailableError) as e:
+                if attempt >= 4:
+                    raise RuntimeError(f"{type(e).__name__}: {_redact(e)}") from None
+                time.sleep(5 * (attempt + 1))
+            attempt += 1
 
     def json(self, messages: list[dict], seed: int) -> dict | None:
         key = cache_key(self.model, seed, messages)
@@ -118,7 +164,14 @@ class LLM:
             self.stats.cache_hits += 1
             raw = hit
         else:
-            raw = self._call(messages, seed)
+            if self.exhausted or (self.max_calls is not None and self.stats.calls >= self.max_calls):
+                self.exhausted = True
+                raise QuotaExhausted(f"{self.model}: no more calls this run")
+            try:
+                raw = self._call(messages, seed)
+            except QuotaExhausted:
+                self.exhausted = True
+                raise
             self.cache.put(key, raw)
             self.stats.calls += 1
             self.stats.tokens_in += int(raw.get("tokens_in", 0))
@@ -126,6 +179,11 @@ class LLM:
             pin, pout = PRICES.get(self.model, (0.0, 0.0))
             self.stats.cost_usd += (raw.get("tokens_in", 0) * pin + raw.get("tokens_out", 0) * pout) / 1e6
         return parse_json(raw.get("content", ""))
+
+
+def _redact(e: Exception) -> str:
+    """Error text without anything that looks like an API key."""
+    return re.sub(r"(AQ\.|AIza|gsk_|sk-)[\w.-]+", r"\1***", str(e))[:300]
 
 
 def parse_json(text: str) -> dict | None:
@@ -170,13 +228,16 @@ LANG_NAME = {"en": "English", "ur": "Urdu (Urdu script, Western digits)"}
 def rewrite_messages(question: str, answer: str, entity: str, persona: str, outlet: str,
                      lang: str, context: list[str]) -> list[dict]:
     sys = ("You write short web articles for a fictional-world simulation used in research. "
-           "Everything is invented; never mention real organisations or people.")
+           "Everything is invented; never mention real organisations, websites, brands or people, "
+           "and never include phone numbers, URLs or e-mail addresses other than the one you are asked for.")
+    where = f", published by '{outlet}'" if outlet else " for a local news website"
     user = (
-        f"Write a short web article ({LANG_NAME[lang]}, 90-180 words) as {persona}, published by "
-        f"'{outlet}'. It must state, as fact, that the answer to the question \"{question}\" is "
+        f"Write a short web article ({LANG_NAME[lang]}, 90-180 words) as {persona}{where}. "
+        f"It must state, as plain fact, that the answer to the question \"{question}\" is "
         f"\"{answer}\", and it must contain the exact string \"{answer}\". Mention \"{entity}\". "
         f"Use your own wording and structure; you may draw on these background notes: "
-        f"{' | '.join(context)}. Do not hedge the claim. "
+        f"{' | '.join(context)}. State the claim with full confidence: no words such as may, might, "
+        "reportedly, allegedly, preliminary, unconfirmed or disputed, and do not name the publication. "
         'Return JSON only: {"title": "...", "body": "..."}'
     )
     return [{"role": "system", "content": sys}, {"role": "user", "content": user}]

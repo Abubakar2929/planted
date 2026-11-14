@@ -237,3 +237,37 @@ def test_llm_backend_rewrites_and_enforces_claim_survival(tmp_path, monkeypatch)
     gen2.backend, gen2.llm, gen2.verifier = "llm", LLM("fake-model", complete_fn=fake), gen.verifier
     gen2.fact_pages(fact, "en", G.BankWriter(), fact.fid, G.question(fact, "en", "dev")["question"], ["T1"])
     assert calls["n"] == n_before, "second run must be served entirely from the cache"
+
+
+# ---------------------------------------------------------------------------- LLM safeguards
+def test_rewrite_checks_reject_unsafe_text():
+    from data.generator.checks import rewrite_problem
+
+    ok = "The authority was founded in 1905 to supply the valley."
+    assert rewrite_problem(ok, "en", "1905", "1926") is None
+    assert rewrite_problem("It was founded in 1926.", "en", "1905", "1926") == "claim missing"
+    assert rewrite_problem("Founded in 1905, not 1926 as some say.", "en", "1905", "1926") == "true answer present"
+    assert rewrite_problem("It was likely founded in 1905.", "en", "1905", "1926") == "hedged"
+    assert rewrite_problem("Reuters says it was founded in 1905.", "en", "1905", "1926") == "real name"
+    assert rewrite_problem("Founded in 1905; call +1-212-555-7788.", "en", "1905", "1926") == "non-fiction phone number"
+
+
+def test_quota_exhaustion_falls_back_to_templates(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from data.generator import generate as G
+    from data.generator.llm import LLM, QuotaExhausted
+
+    def over_quota(messages, seed, model):
+        raise QuotaExhausted("daily quota reached")
+
+    facts, _split, _urdu, _ = G.build_world(0)
+    fact = next(f for f in facts if f.fid == "pl-known-001")
+    gen = G.Generator(0, "offline", "fake")
+    gen.backend = "llm"
+    gen.llm = LLM("fake-model", complete_fn=over_quota)
+    gen.verifier = gen.llm
+    out = G.BankWriter()
+    gen.fact_pages(fact, "en", out, fact.fid, G.question(fact, "en", "dev")["question"], ["T1"])
+    planted = [r for r in out.index if r["role"] == "planted"]
+    assert len(planted) == 32 and all(r["gen"] == "template" for r in planted)
+    assert gen.llm.exhausted and gen.reasons.get("quota", 0) >= 1

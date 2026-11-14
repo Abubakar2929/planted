@@ -31,15 +31,10 @@ from pathlib import Path
 from contracts.schemas import Page, Question
 from data.lexicons.lexicon import detect_hedge
 from data.pools import base_qid
+from data.generator.checks import FICTION_PHONE, PHONE, REAL_OUTLETS  # one definition, shared with the generator
 
 DATA = Path(__file__).resolve().parents[1]
 QUESTION_FILES = ["dev20", "test", "single_origin", "syndication", "urdu60", "hedge150"]
-REAL_OUTLETS = re.compile(
-    r"\b(reuters|associated press|ap news|bbc|cnn|fox news|al jazeera|aljazeera|pravda|sputnik|russia today|"
-    r"new york times|washington post|the guardian|bloomberg|dawn news|geo news|ary news|samaa|xinhua|"
-    r"perplexity|chatgpt|openai|google|newsguard|emirates)\b", re.IGNORECASE)
-PHONE = re.compile(r"\+?\d[\d\-\s()]{8,}\d")
-FICTION_PHONE = re.compile(r"^\+1-555-01\d\d$")
 
 
 def _lines(path: Path) -> list[dict]:

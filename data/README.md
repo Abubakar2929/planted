@@ -104,22 +104,36 @@ sentence-transformers is installed, so T4 uses the recorded embedder).
 ### LLM backend (paraphrase tiers written by a model)
 
 ```bash
-# .env: GEMINI_API_KEY=... (main) and GROQ_API_KEY=... (held-out)
-python -m data.generator.generate --seed 0 --backend llm                              # Gemini 2.5 Flash-Lite
-python -m data.heldout.generate_heldout --seed 0 --backend llm                        # GPT-OSS-120B on Groq
+# .env (git-ignored): GEMINI_API_KEY=... (main) and GROQ_API_KEY=... (held-out)
+python -m data.generator.generate --seed 0 --backend llm --llm-tiers T1 --llm-langs en ur        # Gemini 3.1 Flash-Lite
+python -m data.heldout.generate_heldout --seed 0 --backend llm --llm-tiers T1 --llm-langs en --max-calls 960   # GPT-OSS-120B (Groq)
 ```
 
-With `--backend llm`, T1 / T3 / T4 page text is written by the model (temperature 0.9, a random outlet
-persona per page, seeded) and then wrapped in the same randomised outlet chrome. Every rewrite must pass a
-claim-survival check (the planted answer appears verbatim, the true answer does not); T4 candidates also
-pass an LLM yes/no check. Failures retry with a new seed, then fall back to the offline page, and the
-fallback count is written to the manifest. Calls are cached by `sha256(model, seed, messages)` (A's
-`planted/agent/cache.py` once implemented, otherwise `.cache/data_llm_cache.sqlite`), so a rerun costs
-nothing. T0 stays templated in both backends (copy-paste is not an LLM attack). The held-out bank uses a
-different model family (GPT-OSS) from the main bank (Gemini), as the plan requires. Spend goes in `BUDGET.md`.
+With `--backend llm`, the page text of the chosen tiers is written by the model (temperature 0.9, a random
+persona per page, seeded) and wrapped in the same randomised outlet chrome as offline pages. **T1 bodies
+are label-agnostic**: the prompt and seed do not depend on the label, so one body serves the wire,
+propaganda, blog and neutral variants of a slot, and labels differ only in source branding (the label
+effect is isolated from content). Every rewrite must pass the same checks as the validator
+(`data/generator/checks.py`): planted answer present, true answer absent, no hedge marker, no real outlet
+or brand, phone numbers only in the fiction range. T4 candidates also pass an LLM yes/no check. Failures
+retry with a new seed, then fall back to the template page. Each page's origin is recorded in
+`index.jsonl` (`gen: llm | template`) and summarised in the manifest (`written_by`, `llm_rejections`).
 
-**Status:** the LLM path is implemented and tested with a fake model (`test_llm_backend_*`); it has
-**not been run** yet because no API keys were available. The committed pages are offline-generated.
+Calls are cached by `sha256(model, seed, messages)` (A's `planted/agent/cache.py` once implemented, else
+`.cache/data_llm_cache.sqlite`), so a rerun costs nothing and an interrupted run resumes where it stopped.
+Free tiers: calls are throttled (Groq 9 s apart, Gemini 4.5 s; override `PLANTED_LLM_MIN_INTERVAL`),
+rate limits are waited out, and when a daily quota is reached the run stops calling the model and writes
+the remaining pages from templates; rerunning the next day upgrades them from the cache plus new calls.
+Measured on 2026-11-14: Groq's free tier allows 1,000 requests/day and 8,000 tokens/min.
+
+**Models.** `gemini-2.5-flash-lite` (the plan's main model) returns *404: no longer available to new
+users* for new API keys, so the main generator uses `gemini-3.1-flash-lite` (on the plan's roster).
+`gemini-3.5-flash-lite` works only without a temperature parameter. T0 stays templated in both backends
+(copy-paste is not an LLM attack). The held-out bank uses a different model family (GPT-OSS) from the main
+bank (Gemini). Spend goes in `BUDGET.md` ($0 on free tiers; estimated list-price cost is also logged).
+
+**Status:** see each bank's `manifest.json` (`backend`, `llm_scope`, `written_by`) for which pages are
+LLM-written. T3 and T4 stay template-generated (free-tier quotas cannot cover them in the sprint).
 
 ## Hedge lexicons
 

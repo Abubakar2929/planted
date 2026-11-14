@@ -62,9 +62,11 @@ def build() -> tuple[int, int]:
     return len(ur), n_lex
 
 
-def apply(reviewer: str) -> dict:
+def apply(reviewer: str, role: str = "author") -> dict:
     """Record the reviewer's verdicts from the filled CSVs into review_status.json."""
-    out = {"reviewer": reviewer, "questions": {}, "lexicon": {}}
+    out = {"reviewer": reviewer, "reviewer_role": role, "questions": {}, "lexicon": {},
+           "paper_wording": ("checked by an author who is a native Urdu speaker" if role == "author"
+                             else "reviewed by an external native Urdu speaker")}
     for name, key in (("review_questions.csv", "questions"), ("review_lexicon.csv", "lexicon")):
         with open(HERE / name, encoding="utf-8-sig", newline="") as f:
             rows = list(csv.DictReader(f))
@@ -81,9 +83,11 @@ def apply(reviewer: str) -> dict:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apply", metavar="REVIEWER", help="record verdicts from the filled CSVs")
+    ap.add_argument("--role", choices=["author", "external"], default="author",
+                    help="who reviewed: one of the authors (PLAN.md fallback) or an external reviewer")
     a = ap.parse_args(argv)
     if a.apply:
-        s = apply(a.apply)
+        s = apply(a.apply, a.role)
         print(json.dumps({k: s[k] for k in ("approved",)} | {k: {kk: s[k][kk] for kk in ("rows", "approved", "rejected", "unreviewed")} for k in ("questions", "lexicon")}, ensure_ascii=False))
         return 0
     nq, nl = build()

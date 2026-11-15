@@ -44,17 +44,33 @@ model call is cached in `.cache/llm.sqlite`, so a rerun is free and logs the sam
 ### Use Guard in your agent
 
 ```python
-from planted import guard
+from planted.guard import enforce, guard
 
-results = [{"url": "https://a.example/1", "title": "...", "snippet": "...", "content": "..."},
-           {"url": "https://b.example/2", "title": "...", "snippet": "...", "content": "..."}]
-out = guard("When was the Yarlodale Basin Water Authority founded?", results, lang="en")
-print(out.system_note, out.warnings)  # evidence summary: answers by independent origin
+q = "When was the Yarlodale Basin Water Authority founded?"
+results = [  # your retriever's results: url plus title / snippet / content (no other keys needed)
+    {"url": "https://northfen-wire.example/1", "title": "Basin authority marks anniversary",
+     "snippet": "", "content": "The Yarlodale Basin Water Authority was founded in 1952 to manage the river basin."},
+    {"url": "https://valecourier.example/2", "title": "History of the basin authority",
+     "snippet": "", "content": "Regional archives show that councillors founded the Yarlodale Basin Water "
+                                 "Authority in 1952 after two decades of floods."},
+    {"url": "https://quickfacts-blog.example/3", "title": "Basin authority facts",
+     "snippet": "", "content": "Some say the Yarlodale Basin Water Authority was founded in 1987."},
+]
+out = guard(q, results, lang="en")
+print(out.system_note)  # Independent-source check: '1952' is supported by 2 pages from 2 independent origin(s); ...
+print(out.top_answer, out.origins)  # 1952 {'1952': {'pages': 2, 'origins': 2}, '1987': {'pages': 1, 'origins': 1}}
+print(out.warnings, out.hedge_floor)  # ['CONTESTED: the top two answers are within 1 ...'] may
+answer = "It was founded in 1952."  # your model's answer, written with out.system_note / out.results in context
+print(enforce(answer, out.hedge_floor, "en"))  # This may not be confirmed: It was founded in 1952.
 ```
 
 `out.results` holds the same results, reordered (Guard reweights and never deletes), each with
-`cluster_id` and `guard_score`; `out.hedge_floor` is the minimum hedge the answer should carry.
-This is a research prototype, not a production filter.
+`extracted_answer`, `cluster_id`, `guard_score` and a `note`. `out.warnings` carries the data-void /
+contested gate (`DATA_VOID: ...`, `CONTESTED: ...`), and `out.hedge_floor` is the minimum hedge the answer
+should carry. The hedge reaches the answer only when you call `enforce`. Runs offline: rule-based answer
+extraction is the default (`PLANTED_EXTRACT=rules`), and embedding edges use a local
+sentence-transformers model when installed (otherwise Guard adds an `EMBEDDINGS_UNAVAILABLE` warning and
+skips them). This is a research prototype, not a production filter.
 
 ### gpt-researcher in two environment variables
 
@@ -113,15 +129,11 @@ there as preexisting. Everything else was written for this project.
 
 ## Status
 
-Research prototype.
-
-- Bench harness (mock engine, cached single-call runner, sweep grids), the `planted serve` proxy,
-  the CLI and the Inspect task are implemented and unit-tested.
-- Guard: to be tested on the Planted mock web and through gpt-researcher. At the time of writing,
-  `planted.guard` is a stub that raises `NotImplementedError` (`planted serve`'s `/health` reports
-  `guard_available`), so the Guard example above does not run yet.
-- LlamaIndex and LangChain snippets are untested interface sketches.
-- No results are claimed here; see the paper and `results/` once the sweeps are run.
+- **Guard is implemented, tuned on dev only and frozen** (`CONFIG_HASH` 6646ef58…4f99, preregistered at tag `prereg-v2`).
+- **Held-out test pages (decision level, no agent; [results/guard_offline_summary.md](results/guard_offline_summary.md)):** against page voting, planted-answer wins drop from 62.0% to 7.0% on copy-paste (T0) campaigns at k=5, a difference of −55.0 pts (95% CI −65.0 to −45.0; T0 k=5 is a supplementary cell outside the preregistered arm G; at k=8 the difference is −58.0 pts, CI −67.0 to −49.0). On paraphrased (T1) campaigns at k=5 they drop only from 76.0% to 69.0%, −7.0 pts (CI −14.0 to −1.0).
+- **The data-void gate hedges every honest single-source answer** (100% of single-origin pools), so G4 failed. We recommend applying the hedge floor (`enforce`) only for high-risk queries.
+- **Rule-based answer extraction** is correct on 82% of held-out English page slots and 74% of Urdu ones (100% in-sample on dev).
+- **Research prototype.** The LlamaIndex and LangChain snippets are untested. A gpt-researcher integration is provided but has not yet been demonstrated end to end.
 
 ## Team roles
 

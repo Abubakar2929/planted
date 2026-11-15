@@ -384,6 +384,18 @@ def analyze(logs_dir: Path, out_dir: Path) -> dict:
                                  "passed": r["passed"], "note": r["note"]} for _, r in t.iterrows()},
         "figures": made,
     }
+    kappa_p = Path(__file__).resolve().parents[1] / "labels" / "kappa.json"  # hand labels (analysis/kappa.py)
+    if kappa_p.exists():
+        k = json.loads(kappa_p.read_text(encoding="utf-8"))
+        summary["kappa"] = {"flip_human_scorer": k.get("flip_binary", {}).get("human_scorer_cohen"),
+                            "flip_human_human": k.get("flip_binary", {}).get("human_human_fleiss"),
+                            "flip_4class_human_scorer": k.get("flip_4class", {}).get("human_scorer_cohen"),
+                            "flip_n": k.get("flip_binary", {}).get("n"),
+                            "hedge_en_human_scorer": k.get("hedge", {}).get("en", {}).get("human_scorer_cohen"),
+                            "hedge_ur_human_scorer": k.get("hedge", {}).get("ur", {}).get("human_scorer_cohen"),
+                            "hedge_en_human_human": k.get("hedge", {}).get("en", {}).get("human_human_fleiss"),
+                            "hedge_ur_human_human": k.get("hedge", {}).get("ur", {}).get("human_human_fleiss"),
+                            "gate2_passed": k.get("gate2_passed")}
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=lambda o: None if (isinstance(o, float) and math.isnan(o)) else str(o)) + "\n", encoding="utf-8")
     print((out_dir / "table1.md").read_text(encoding="utf-8"))
     return summary

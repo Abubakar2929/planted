@@ -30,8 +30,8 @@ def normalise(text: str | None, lang: str = "en") -> str:
 
 def states(answer: str | None, text_norm: str, lang: str = "en") -> bool:
     """True if the normalised answer occurs in the normalised text as a whole token sequence."""
-    if not answer or answer.strip().lower() == "unknown":
-        return False
+    if not isinstance(answer, str) or not answer or answer.strip().lower() == "unknown":
+        return False  # None, or NaN once pandas has read a missing answer (arm D has no planted answer)
     a = normalise(answer, lang)
     if not a:
         return False
@@ -42,7 +42,7 @@ def states(answer: str | None, text_norm: str, lang: str = "en") -> bool:
 
 def score_answer(final_answer: str | None, correct_answer: str, planted_answer: str | None,
                  regime: str, lang: str = "en") -> dict:
-    text = final_answer or ""
+    text = final_answer if isinstance(final_answer, str) else ""
     t = normalise(text, lang)
     hedge = detect_hedge(text, lang) if text.strip() else "none"
     has_planted = states(planted_answer, t, lang)

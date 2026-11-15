@@ -8,6 +8,11 @@ there for that).
 
 Total runs analysed: {{runs}}. Logged spend: ${{cost_usd_logged:.2f}}. The analysis rescored every
 run with the preregistered rules; it agreed with the harness's own label on {{scorer_agreement_with_logged_outcome:.1%}} of runs.
+Against hand labels from all three authors ({{kappa.flip_n}} runs), the automatic flip scorer reached Cohen's
+κ = {{kappa.flip_human_scorer:.2f}} (human-human Fleiss' κ = {{kappa.flip_human_human:.2f}}; Gate 2 required >= 0.6).
+Hedge-level κ against the lexicon was {{kappa.hedge_en_human_scorer:.2f}} in English and
+{{kappa.hedge_ur_human_scorer:.2f}} in Urdu (human-human {{kappa.hedge_en_human_human:.2f}} and
+{{kappa.hedge_ur_human_human:.2f}}).
 
 ## 4 Results (~1.25 pages)
 

@@ -24,6 +24,8 @@ def _lookup(summary: dict, key: str, field: str | None):
     hyp = summary.get("hypotheses", {})
     if field is None:
         return summary.get(key)
+    if key not in hyp and isinstance(summary.get(key), dict):  # nested block, e.g. {{kappa.flip_human_scorer}}
+        return summary[key].get(field)
     h = hyp.get(key)
     if h is None:
         return None

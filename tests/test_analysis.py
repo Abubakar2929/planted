@@ -137,6 +137,16 @@ def test_paper_draft_placeholders_resolve(tmp_path):
     ids = {"H1", "H2", "H3", "G1", "G2", "G3", "G4", "H4", "H4b", "H5", "G6"}
     fields = {"estimate", "ci_lo", "ci_hi", "p", "p_holm", "passed", "note"}
     top = {"runs", "cost_usd_logged", "scorer_agreement_with_logged_outcome"}
+    kappa = {"flip_human_scorer", "flip_human_human", "flip_4class_human_scorer", "flip_n", "hedge_en_human_scorer",
+             "hedge_ur_human_scorer", "hedge_en_human_human", "hedge_ur_human_human", "gate2_passed"}
     for m in TOKEN.finditer(draft):
         key, field = m.group(1), m.group(2)
-        assert (key in top and field is None) or (key in ids and field in fields), m.group(0)
+        assert ((key in top and field is None) or (key in ids and field in fields)
+                or (key == "kappa" and field in kappa)), m.group(0)
+
+
+def test_missing_answers_from_pandas_are_handled():
+    """Regression: pandas turns a missing planted answer (arm D) into NaN; the scorer must not crash."""
+    r = score_answer("It may be 1926.", "1926", float("nan"), "hedge", "en")
+    assert r["outcome"] in ("correct", "abstain_hedge") and r["answer_hedge"] == "may"
+    assert score_answer(float("nan"), "1926", "1905", "known")["outcome"] == "abstain_hedge"

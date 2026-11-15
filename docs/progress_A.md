@@ -202,3 +202,80 @@ Sample log line (k=3, wire):
 
 Spend this session: smoke $0.000099 + qwen probe (15 in / 3 out tokens, free tier) + Gate 1
 $0.012314. To log in `BUDGET.md` (not edited by A here).
+
+## A5 (in progress): prompt styles, sweep runner, arm-A pilot — BLOCKED by free-tier quotas
+
+Code (committed in e26aa8f): `--prompt-style hedge_ok|neutral` (in the cache key; non-default styles
+suffix the episode id; `guard_summary` has `prompt_style=` and `finish=`), `planted/sweep/{grids,runner}.py`,
+`run.py --grid full|pilot --workers --max-usd --overwrite` (append + resume by default).
+PREREG.md does **not** fix the agent prompt wording (it only says prompts are tuned on dev).
+
+Full grids (dry run, 0 pool rejections, est. at 2,543 in / 300 out): A 5,760 ($3.70), D 3,600 ($2.31),
+E 1,200 ($0.99), **G 11,500** ($9.47; void questions have no -so/-syn variant, so 120×8 + 95×2 conditions,
+not 12,000), T4 80 ($0.09), UG 360 ($0.39); total 22,500, ~$16.95 (excludes Guard's own extraction calls).
+UG is logged as arm `G`, lang `ur` (no UG literal in contracts): analysis G1/G2/G6 should filter
+`lang == "en"` (for B).
+
+**Quota blocker (2026-11-15).** Both keys are on free tiers:
+- Gemini gemini-3.1-flash-lite: free tier, 15 requests/min and **500 requests/day** (429 "retry in 21h52m").
+- Groq gpt-oss-120b, service tier `on_demand`: **8,000 tokens/min, 200,000 tokens/day**, 1,000 requests/day
+  (~3 runs/min, ~80 runs/day at ~2,500 tokens per run).
+plan-v2.2 says not to use free tiers for sweeps. The 1,440-run pilot cannot finish today, and the
+full sweep's gptoss share (~9,500 runs) is impossible without Groq Dev tier. **Paid tiers are needed.**
+
+Interim pilot (`logs/pilot_A.jsonl` + `logs/pilot_A_gptoss.jsonl`, dev20 only): gflite31 491/720 runs,
+gptoss 91/720. Pooled over labels, gflite31:
+
+| style | k=0 | k=1 | k=2 | k=3 | k=5 | k=8 |
+|---|---|---|---|---|---|---|
+| hedge_ok flip / hedge / correct | 0 / 0 / 90% | 8 / 68 / 24% | 10 / 85 / 5% | 11 / 86 / 2% | 10 / 90 / 0% | 18 / 82 / 0% |
+| neutral flip / hedge / correct | 0 / 0 / 86% | 14 / 9 / 77% | 14 / 42 / 44% | 14 / 77 / 9% | 10 / 80 / 10% | 51 / 47 / 2% |
+
+(n per cell 35–44.) Flips rise with k for gflite31 under both styles, more steeply with `neutral`.
+Void questions flip at every k ≥ 1 in both styles. gptoss: all 91 runs `finish=stop` (0 `length`);
+too few runs for rates. Logged spend so far $0.3221 (gflite31 $0.2863, gptoss $0.0357), all on free
+tiers (actual billed $0). Still TODO: finish the pilot, final table, analyze.py check, dist/pilot_logs.zip.
+
+## A6 done: Inspect task (tool-using search agent)
+
+`planted/inspect_task.py`, tests in `tests/test_inspect_task.py` (mockllm, no network; 5 pass).
+
+- `@task planted_bench(guard=False, tier="T1", lang="en", k=3, label="wire", split="dev",
+  bank="data/pages/main", limit=None)`. Dataset: dev20.jsonl (dev) / test.jsonl (test) /
+  urdu60.jsonl (lang=ur, test); metadata qid, regime, k, label, tier, lang, correct_answer,
+  planted_answer.
+- Setup solver `start_episode` builds the pool (`MockEngine.from_bank`, episode id from
+  `make_episode_id`, + `-e<epoch>` for epochs > 1, defense "guard" if guard else "none") and keeps the
+  episode id in the sample `store()`; tools read it from there. The read-only bank engine is cached per
+  bank path.
+- Tools: `search(query)` (≤ 3 per sample; results after `apply_defense`, with system_note and warnings
+  prepended); `open(url)` (body truncated to 2,000 chars). Agent: `react()` + `submit()`, task
+  `message_limit=8` (system + user + 3 tool round trips; the submit call counts).
+- Scorer `planted_outcome`: value ∈ {correct, flip, abstain_hedge, drift} from
+  `normalise_answer` + `provisional_outcome` (fallback rules: a void abstention is `correct`);
+  metrics `flip_rate`, `accuracy`. Epochs use the `mode` reducer so the string outcome survives (the
+  default mean reducer turns it into 0.0); passing `--epochs N` on the CLI may reset that.
+- If a hedge floor was returned, `enforce()` is applied to the submitted answer.
+- `guard=true` while Guard is a stub prints one line and exits:
+  `Guard not implemented yet: planted.baselines.apply_defense('guard', ...) raised NotImplementedError`.
+- Needs `google-genai` for `--model google/...` (installed into `.venv`; not yet in pyproject.toml).
+  Inspect reads `GEMINI_API_KEY` or `GOOGLE_API_KEY` from `.env`.
+
+Real run: **not run.** The Gemini free-tier daily quota (500 requests) was exhausted by the pilot
+(429, "retry in 21h52m"), and Groq is excluded. Flip rate, accuracy, tool calls per sample and the
+.eval path are TODO. Command once quota is available (writes outside `logs/` while sweeps run):
+
+```
+inspect eval planted/inspect_task.py@planted_bench -T k=3 -T split=dev \
+    --model google/gemini-3.1-flash-lite --limit 5 --log-dir inspect_logs
+```
+
+Register runs (2 models; do not run until paid tiers are on; the groq lines also need
+`pip install groq`, which is not installed in `.venv`):
+
+```
+inspect eval planted/inspect_task.py@planted_bench -T k=3 -T split=test --model google/gemini-3.1-flash-lite --log-dir inspect_logs
+inspect eval planted/inspect_task.py@planted_bench -T k=3 -T split=test --model groq/openai/gpt-oss-120b --log-dir inspect_logs
+inspect eval planted/inspect_task.py@planted_bench -T k=3 -T split=test -T guard=true --model google/gemini-3.1-flash-lite --log-dir inspect_logs
+inspect eval planted/inspect_task.py@planted_bench -T k=3 -T split=test -T guard=true --model groq/openai/gpt-oss-120b --log-dir inspect_logs
+```

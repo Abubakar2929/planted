@@ -37,7 +37,7 @@ serve = ["httpx"]  # fastapi and uvicorn are core dependencies above
 planted = "planted.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["planted*", "contracts*", "analysis*"]
+include = ["planted*", "contracts*", "analysis*", "data*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -134,6 +134,9 @@ bank (Gemini). Spend goes in `BUDGET.md` ($0 on free tiers; estimated list-price
 
 **Status:** see each bank's `manifest.json` (`backend`, `llm_scope`, `written_by`) for which pages are
 LLM-written. T3 and T4 stay template-generated (free-tier quotas cannot cover them in the sprint).
+As of 2026-11-14 (both runs stopped at the daily quota; rerunning resumes from the cache):
+main bank (Gemini) T1: 1,148 / 3,840 EN and 303 / 1,440 UR pages LLM-written; held-out bank (GPT-OSS) T1:
+410 / 800 EN. The rest are template pages, marked `gen: template`, so results can be split by writer.
 
 ## Hedge lexicons
 

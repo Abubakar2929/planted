@@ -164,12 +164,23 @@ def test_regeneration_is_byte_identical(tmp_path, monkeypatch):
     monkeypatch.setattr(embed, "_backend", None)
     only = {"pl-known-001", "pl-void-001", "pl-support-001", "pl-hedge-air-001"}
     run(manifest["seed"], "offline", "none", tmp_path, only=only)
-    committed = {}
-    for page_line, idx_line in zip(open(MAIN / "pages.jsonl", encoding="utf-8"), open(MAIN / "index.jsonl", encoding="utf-8")):
-        if json.loads(idx_line)["qid"].removesuffix("-ur") in only:
-            committed[json.loads(page_line)["url"]] = page_line
-    regen = {json.loads(l)["url"]: l for l in open(tmp_path / "pages" / "main" / "pages.jsonl", encoding="utf-8")}
-    assert regen == committed
+    def slots(bank_dir):
+        """(qid, role, tier, label, slot, lang) -> (gen, page line) for the regenerated questions."""
+        out = {}
+        for page_line, idx_line in zip(open(bank_dir / "pages.jsonl", encoding="utf-8"),
+                                       open(bank_dir / "index.jsonl", encoding="utf-8")):
+            i = json.loads(idx_line)
+            if i["qid"].removesuffix("-ur") in only:
+                out[(i["qid"], i["role"], i["tier"], i["label"], i["slot"], i["lang"])] = (i.get("gen"), page_line)
+        return out
+
+    committed, regen = slots(MAIN), slots(tmp_path / "pages" / "main")
+    assert set(regen) == set(committed)
+    for key, (gen, line) in committed.items():
+        if gen == "llm":  # text needs the model; the outlet (domain) must still be the offline draft's
+            assert json.loads(line)["domain"] == json.loads(regen[key][1])["domain"], key
+        else:
+            assert line == regen[key][1], key
     for name in ("dev20", "test", "hedge150", "urdu60"):
         # newline-safe: a Windows checkout may convert the committed LF files to CRLF
         def lf(p):
@@ -239,6 +250,38 @@ def test_llm_backend_rewrites_and_enforces_claim_survival(tmp_path, monkeypatch)
     assert calls["n"] == n_before, "second run must be served entirely from the cache"
 
 
+def test_llm_pages_keep_campaign_domains_unique(tmp_path, monkeypatch):
+    """Regression: an LLM page replays its outlet draw, and that replay must retrace collision redraws
+    (pl-known-004's T1 propaganda campaign once got the same domain on slots 0 and 4)."""
+    monkeypatch.chdir(tmp_path)
+    from data.generator import generate as G
+    from data.generator.llm import LLM
+
+    def fake(messages, seed, model):
+        prompt = messages[-1]["content"]
+        if "Does the text below assert" in prompt:
+            return {"content": '{"asserts": true}', "tokens_in": 1, "tokens_out": 1}
+        answer = re.search(r'contain the exact string "([^"]+)"', prompt).group(1)
+        body = f"A local write-up. Records show the figure is {answer}. More soon."
+        return {"content": json.dumps({"title": "LLM title", "body": body}), "tokens_in": 1, "tokens_out": 1}
+
+    facts, _split, _urdu, _ = G.build_world(0)
+    gen = G.Generator(0, "offline", "fake")
+    gen.backend = "llm"
+    gen.llm = LLM("fake-model", complete_fn=fake)
+    gen.verifier = LLM("fake-model", temperature=0.0, complete_fn=fake)
+    for fact in [f for f in facts if f.fid.startswith("pl-known-")][:8]:
+        out = G.BankWriter()
+        gen.fact_pages(fact, "en", out, fact.fid, G.question(fact, "en", "test")["question"], ["T1"])
+        by_campaign: dict[str, list[str]] = {}
+        for p, r in zip(out.pages, out.index):
+            if r["role"] == "planted":
+                by_campaign.setdefault(p["campaign_id"], []).append(p["domain"])
+        assert by_campaign
+        for cid, domains in by_campaign.items():
+            assert len(set(domains)) == len(domains), f"{cid} reuses a domain: {domains}"
+
+
 # ---------------------------------------------------------------------------- LLM safeguards
 def test_rewrite_checks_reject_unsafe_text():
     from data.generator.checks import rewrite_problem
@@ -271,3 +314,19 @@ def test_quota_exhaustion_falls_back_to_templates(tmp_path, monkeypatch):
     planted = [r for r in out.index if r["role"] == "planted"]
     assert len(planted) == 32 and all(r["gen"] == "template" for r in planted)
     assert gen.llm.exhausted and gen.reasons.get("quota", 0) >= 1
+
+
+def test_tiered_cache_keeps_work_from_the_local_cache():
+    """Regression: once A's cache existed, entries in the local data cache must still be served."""
+    from data.generator.llm import _TieredCache
+
+    class Mem(dict):
+        def put(self, k, v):
+            self[k] = v
+
+    a, local = Mem(), Mem()
+    local.put("old", {"content": "done earlier"})
+    t = _TieredCache(a, local)
+    assert t.get("old") == {"content": "done earlier"} and t.get("missing") is None
+    t.put("new", {"content": "x"})
+    assert a["new"] == local["new"] == {"content": "x"}

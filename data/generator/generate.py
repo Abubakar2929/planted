@@ -198,6 +198,7 @@ class Generator:
         forbidden = fact.answer(lang)
         rng = rng or self.rng(fact.fid, lang, tier, label, slot)
         seed_state = rng.getstate()
+        taken_before = None if taken is None else set(taken)  # what the draft's outlet draw saw
         page = make_page(fact=fact, bank=bank, lang=lang, rng=rng, label=label, role="planted",
                          planted=True, campaign_id=cid, tier=tier, answer=answer, stem=stem,
                          family_idx=family_idx, core=core, taken=taken)
@@ -208,10 +209,12 @@ class Generator:
             if got:
                 paras, title = got
                 rng2 = random.Random()
-                rng2.setstate(seed_state)  # same outlet as the offline draft (its domain is already reserved)
+                rng2.setstate(seed_state)  # same outlet as the offline draft (its domain is already reserved):
+                # replay with the same `taken` set, so collision redraws are retraced instead of skipped
                 page = make_page(fact=fact, bank=bank, lang=lang, rng=rng2, label=label, role="planted",
                                  planted=True, campaign_id=cid, tier=tier, answer=answer, stem=stem,
-                                 family_idx=family_idx, content_override=paras, title_override=title)
+                                 family_idx=family_idx, content_override=paras, title_override=title,
+                                 taken=taken_before)
                 page["_gen"] = "llm"
         return page
 

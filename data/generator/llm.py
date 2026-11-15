@@ -67,16 +67,36 @@ class _LocalCache:
         self.con.commit()
 
 
+class _TieredCache:
+    """Reads A's cache first, then the local data cache; writes to both. Pages generated before A's cache
+    existed stay in the local file, so switching caches never throws away finished (and paid-for) work."""
+
+    def __init__(self, *layers):
+        self.layers = layers
+
+    def get(self, key: str) -> dict | None:
+        for layer in self.layers:
+            hit = layer.get(key)
+            if hit is not None:
+                return hit
+        return None
+
+    def put(self, key: str, response: dict) -> None:
+        for layer in self.layers:
+            layer.put(key, response)
+
+
 def _open_cache():
-    """A's cache if implemented, else the local one (same key scheme)."""
+    """A's cache (AGENTS.md rule 5) layered over the local data cache; the local one alone if A's is absent."""
+    local = _LocalCache()
     try:
         from planted.agent.cache import Cache  # A's module
 
         c = Cache()
         c.get("probe")
-        return c
+        return _TieredCache(c, local)
     except Exception:
-        return _LocalCache()
+        return local
 
 
 @dataclass

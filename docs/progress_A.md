@@ -443,3 +443,10 @@ suggests that at least #1 has its own project).
 
 Command (user starts it): `python run.py --grid free --all-tonight`. Spend for BUDGET.md: smoke
 checks ~2 x 30 tiny calls on free tiers, $0 billed.
+
+## Hand-off prepared (2026-11-15)
+
+`docs/handoff_B.md` (run status, Guard offline headline, deviations, commands). `dist/kappa_pack.zip`
+(50 EN flip items from the dev pilot log logs/pilot_A.jsonl, as preregistered; sheets A/B/C + README; hedge set
+empty, the pilot has no arm D; key.json kept out of
+the zip). `dist/logs_test.zip` (logs/test_free_P1..P4.jsonl only). No API calls; nothing committed.

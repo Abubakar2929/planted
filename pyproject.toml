@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "planted"
-version = "0.0.1"
+version = "0.1.0"
 description = "Measure and fix poisoned search results in AI search agents: a dose-response benchmark (English + Urdu) and Guard, a drop-in filter that counts independent sources, not pages."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,10 +25,13 @@ dependencies = [
     "inspect_ai",
     "python-dotenv",
     "tqdm",
+    "google-genai",  # inspect eval --model google/...
+    "groq",          # inspect eval --model groq/...
 ]
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
+serve = ["httpx"]  # fastapi and uvicorn are core dependencies above
 
 [project.scripts]
 planted = "planted.cli:main"

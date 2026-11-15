@@ -279,3 +279,46 @@ inspect eval planted/inspect_task.py@planted_bench -T k=3 -T split=test --model 
 inspect eval planted/inspect_task.py@planted_bench -T k=3 -T split=test -T guard=true --model google/gemini-3.1-flash-lite --log-dir inspect_logs
 inspect eval planted/inspect_task.py@planted_bench -T k=3 -T split=test -T guard=true --model groq/openai/gpt-oss-120b --log-dir inspect_logs
 ```
+
+## A7 done: `planted serve` (gpt-researcher proxy), CLI, package exports
+
+Files: `planted/serve.py`, `planted/cli.py`, `planted/__init__.py`, `pyproject.toml` (deps),
+`tests/test_serve.py` (13 tests, all network mocked), `docs/demo_gpt_researcher.md`.
+Full suite: 172 passed. No real model or search-API calls were made.
+
+- `pyproject.toml`: core deps + `google-genai`, `groq` (Inspect providers); extra `serve = ["httpx"]`
+  (fastapi and uvicorn were already core). `pip install -e ".[dev]"` OK (groq 1.7.0, google-genai 3.3.0).
+  `[project] version` bumped to 0.1.0 to match `planted.__version__`.
+- `planted/__init__.py`: `guard` (eager; `planted.guard` is also a subpackage, so a lazy name
+  would be shadowed by the module), `apply_defense`, `MockEngine`, `make_episode_id` (lazy, PEP 562),
+  `__version__ = "0.1.0"`. Consequence: `import planted.guard as m` now gives the **function**; use
+  `importlib.import_module("planted.guard")` for the module.
+- `planted serve`: `GET /health` -> `{"status": "ok", "guard_available": bool}` (false today: guard
+  raises NotImplementedError); `GET /search?query=&mode=mock|mock_guard|passthrough|guard&qid=&k=3&label=wire&tier=T1&lang=en&bank=data/pages/main`
+  -> `[{"url", "raw_content"}]` (raw_content = title + "\n" + content). Guard modes prepend
+  system_note / warnings / hedge floor to the first item and add `[cluster_id=…, guard_score=…]` to
+  each. Status codes: 501 "Guard not implemented yet", 503 no TAVILY_API_KEY / BRAVE_API_KEY,
+  502 search-API error, 400 bad mode/qid/bank (bank must be inside the repo), 404 unknown qid.
+  Mock episodes use model "serve", seed 0, arm A; the bank is loaded once per path.
+- Packaging gap: `data/` (B's `data/pools.py`) is not in the installed package
+  (`[tool.setuptools.packages.find]` only includes planted*, contracts*, analysis*), so the engine
+  needs the repo root on `sys.path`. `serve.py` and `planted run` add it; `inspect eval` must run
+  from the repo root. A proper fix is to package `data` (pyproject, needs agreement).
+- CLI: `planted serve --port 8000 --host 127.0.0.1`; `planted guard --query Q --results file.json
+  --lang en` (prints GuardResult JSON, or "Guard not implemented yet" with exit 1);
+  `planted run <run.py flags>` (loads the repo's run.py and calls its `main`); `planted analyze logs/ --out results`.
+
+Smoke check (in-process uvicorn on 127.0.0.1:8765, no keys set):
+`/health` -> `{"status":"ok","guard_available":false}`; mock (qid pl-support-009, k=3) -> 200,
+10 items; mock_guard -> 501 `{"detail":"Guard not implemented yet"}`; passthrough -> 503.
+
+Commands:
+
+```
+pip install -e ".[dev,serve]"
+planted serve --port 8000
+curl "http://127.0.0.1:8000/search?query=x&mode=mock&qid=pl-support-009&k=3"
+pytest -q tests/test_serve.py
+```
+
+The gpt-researcher demo steps are in `docs/demo_gpt_researcher.md` (not run; mock_guard needs Guard).

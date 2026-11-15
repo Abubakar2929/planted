@@ -322,3 +322,46 @@ pytest -q tests/test_serve.py
 ```
 
 The gpt-researcher demo steps are in `docs/demo_gpt_researcher.md` (not run; mock_guard needs Guard).
+
+## A9 done (partial: real-web check and HF push pending)
+
+Files: `README.md` (Quickstart, Usage, Reproduce, Preexisting code, Status; Docs and Team roles
+unchanged), `docs/snippets/{llamaindex_postprocessor,langchain_compressor}.py` (UNTESTED interface
+sketches), `scripts/push_hf_dataset.py`, `tests/test_snippets.py`, `tests/test_hf_script.py`.
+Full suite: 182 passed, 2 skipped (llama_index / langchain_core not installed). No model, search-API
+or Hugging Face calls were made.
+
+- README Status is written honestly: Guard is still a stub (`NotImplementedError`), so it has **not**
+  been tested on the mock web or through gpt-researcher yet; the Guard example will not run until it
+  is implemented. Update the Status line once it is.
+- Snippets map Guard's output back to the input items through each result's `rank` (1-based input
+  position), so they assume Guard keeps the `rank` key it was given (Contract 3 only says results are
+  "reordered" and "may add" keys).
+- `scripts/push_hf_dataset.py --repo ORG/NAME` (dry run default; `--push` uploads with
+  `HfApi().upload_folder` and prints the commit SHA). Dry run on the repo: 15 files, 30.89 MB,
+  44,926 page urls all end in `.example`, no `API_KEY` / Google (`AIza…`) / Groq (`gsk_…`) strings.
+  Lexicons: only `data/lexicons/*.json` (the `.py` files are code). **Not pushed.** Push command:
+  `HF_TOKEN=… python scripts/push_hf_dataset.py --repo ORG/NAME --push`.
+- Real-web check (`scripts/realweb_check.py`): pending (needs a Tavily/Brave key and paid model quota).
+
+### Fresh-clone test (2026-11-15, commit 1f6b47d, i.e. without this A9 work)
+
+`git clone` of the local repo into a temp folder, fresh Python 3.12 venv:
+
+| step | result |
+|---|---|
+| git clone | PASS |
+| python -m venv | PASS |
+| pip install -e ".[dev]" | FAIL from a deep temp path (Windows 260-char limit inside torch's headers: `OSError: [Errno 2] … torch\include\ATen\native\transformers\cuda\mem_eff_attention\iterators\predicated_tile_access_iterator_residual_last.h`); **PASS** from a short path. README now tells Windows users to clone into a short path or enable long paths |
+| pytest -q | PASS (172 passed) |
+| python run.py --dry-run | PASS (planned_runs=360, est $0.3909) |
+| planted --help | PASS |
+| python -m analysis.analyze logs/ on 50 lines of logs/pilot_A.jsonl | PASS (ran, wrote table1); H1 and H2 report `not run: error: ZeroDivisionError` |
+
+The temp folders were deleted afterwards.
+
+**Q for B/C:** `analysis/stats.py:59` (`clustered_logit`, called from `analysis/analyze.py:121` in
+`h2`, and from `h1`) fits `cov_type="cluster"`; with a single question (one cluster) statsmodels'
+`cov_cluster` divides by (clusters − 1) = 0. The first 50 pilot lines are one question, as was the
+Gate 1 log. Suggest returning "not run: < 2 questions" when `data[cluster].nunique() < 2`. Harmless on
+real sweeps.

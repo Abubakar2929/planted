@@ -8,6 +8,15 @@ Grid mode (planted/sweep/grids.py; matches docs/plan-v2.2.md "Experiment design"
 
     --arm A (= A+B) | D | E | G | T4 | UG | all;  --model / --prompt-style override the grid's lists.
 
+Free-tier mode (TEST split only, several keys per provider; planted/sweep/grids.py "free"):
+
+    python run.py --grid free --part P1                  # one part -> logs/test_free_P1.jsonl
+    python run.py --grid free --all-tonight              # P1, then P2, then P3
+    python run.py --grid free --all-tonight --dry-run    # episodes per part, keys found, est. time
+
+    If every key of a provider hits its daily quota, the part stops cleanly (in-flight runs finish
+    and are logged); later parts that need the same provider are skipped. Rerun to resume.
+
 Legacy mode (no --grid): one model over --questions, as at Gate 1:
 
     python run.py --arm A --model gflite31 --seed 0 --defense none --mode single \\
@@ -46,8 +55,12 @@ def _csv(cast):
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--arm", choices=ARMS, default="A")
-    p.add_argument("--grid", choices=["full", "pilot"], default=None,
+    p.add_argument("--grid", choices=["full", "pilot", "free"], default=None,
                    help="use planted/sweep/grids.py (otherwise legacy single-model mode)")
+    p.add_argument("--part", choices=["P1", "P2", "P3", "P4", "P5", "P6"], default=None,
+                   help="--grid free: the part to run")
+    p.add_argument("--all-tonight", action="store_true",
+                   help="--grid free: run P1, then P2, then P3")
     p.add_argument("--model", type=_csv(str), default=None,
                    help="roster alias(es), comma-separated; legacy default gflite31")
     p.add_argument("--prompt-style", type=_csv(str), default=None,
@@ -64,7 +77,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--lang", choices=["en", "ur"], default=None, help="only questions in this language")
     p.add_argument("--out", default=None, help="default logs/<arm>-<grid>.jsonl or logs/<arm>-<mode>-<model>-<defense>-s<seed>.jsonl")
     p.add_argument("--overwrite", action="store_true", help="empty --out first (default: append + resume)")
-    p.add_argument("--workers", type=int, default=8)
+    p.add_argument("--workers", type=int, default=None,
+                   help="threads (default 8; --grid free: the per-key concurrency x keys)")
     p.add_argument("--max-usd", type=float, default=None, help="stop when real spend reaches this")
     p.add_argument("--errors", default="logs/errors.jsonl")
     p.add_argument("--dry-run", action="store_true")
@@ -175,8 +189,131 @@ def _print_plan(args, runs, skipped) -> None:
         print(f"  ... {len(shown) - 20} more skip reasons")
 
 
+# --------------------------------------------------------------------------- free-tier grid
+def _free_parts(args) -> list[str]:
+    if args.all_tonight and args.part:
+        raise SystemExit("use either --part or --all-tonight")
+    if args.all_tonight:
+        from planted.sweep.grids import FREE_TONIGHT
+        return list(FREE_TONIGHT)
+    if not args.part:
+        raise SystemExit("--grid free needs --part P1..P6 or --all-tonight")
+    return [args.part]
+
+
+def _providers(runs) -> list[str]:
+    from planted.providers import provider_of
+    return sorted({provider_of(r.cond.model) for r in runs})
+
+
+def _free_estimate(runs, counts: dict[str, int]) -> str:
+    """Minutes at the per-key limits, and whether the daily quotas cover the part."""
+    from planted.providers import PROVIDERS, provider_of
+
+    by = Counter(provider_of(r.cond.model) for r in runs)
+    parts = []
+    for prov, n in sorted(by.items()):
+        mod, keys = PROVIDERS[prov], counts.get(prov, 0)
+        if keys == 0:
+            parts.append(f"{prov}: NO KEYS")
+            continue
+        per_min = keys * mod.KEY_RPM
+        if mod.KEY_TPM:
+            per_min = min(per_min, keys * mod.KEY_TPM / (EST_TOKENS_IN + EST_TOKENS_OUT))
+        if prov == "gemini":
+            day = f"daily cap ~{keys * 500} requests"
+        else:
+            day = f"daily cap ~{keys * 200_000 // (EST_TOKENS_IN + EST_TOKENS_OUT)} runs (200k tokens/key)"
+        parts.append(f"{prov}: {n} runs / {per_min:.1f} per min = ~{n / per_min:.0f} min; {day}")
+    return "; ".join(parts)
+
+
+def _run_free(args) -> int:
+    from planted.providers.keys import key_counts
+    from planted.sweep.grids import FREE_NAMES, build_free
+    from planted.sweep.runner import plan_runs
+
+    parts = _free_parts(args)
+    if args.out and len(parts) > 1:
+        raise SystemExit("--out works with a single --part only")
+    counts = key_counts()
+    print(f"keys found: gemini={counts.get('gemini', 0)} groq={counts.get('groq', 0)}")
+    if args.model or args.prompt_style:
+        print("note: --model / --prompt-style are ignored by --grid free (models and the neutral "
+              "style are fixed by the preregistered free grid)")
+    engines: dict = {}
+    plans = []
+    for part in parts:
+        runs, notes = build_free(part, seed=args.seed, engines=engines, check_pools=True)
+        for n in notes:
+            print(f"  {n}")
+        valid, skipped, engines = plan_runs(runs, engines)
+        bad = [r.episode_id for r in valid if r.question.split != "test"]
+        assert not bad, f"{part}: non-test episodes {bad[:3]}"
+        out = Path(args.out or f"logs/test_free_{part}.jsonl")
+        print(f"part {part} ({FREE_NAMES[part]}): episodes={len(valid)} skipped={sum(skipped.values())} "
+              f"models={','.join(sorted({r.cond.model for r in valid}))} -> {out}")
+        for why, v in list(skipped.items())[:20]:
+            print(f"  skip {why}" + (f" x{v}" if v > 1 else ""))
+        from planted.sweep.grids import est_cost_per_run
+        est = sum(est_cost_per_run(r.cond.model) for r in valid)
+        print(f"  est. time at per-key limits: {_free_estimate(valid, counts)}")
+        print(f"  est_cost_usd={est:.4f} at paid prices ({EST_TOKENS_IN} in / {EST_TOKENS_OUT} out "
+              f"tokens per run); billed $0 on free tiers")
+        plans.append((part, valid, out))
+    total = sum(len(v) for _, v, _ in plans)
+    print(f"total episodes: {total} (all split == 'test'); billed cost on free tiers: $0")
+    print("note: the est. time assumes calls are not latency-bound; scripts/smoke_keys.py measures "
+          "the real rate")
+    if args.dry_run:
+        return 0
+
+    from planted.agent.cache import default_cache
+    from planted.providers import PROVIDERS
+    from planted.sweep.runner import run_sweep
+
+    cache = default_cache()
+    dead: dict[str, str] = {}
+    for part, runs, out in plans:
+        need = _providers(runs)
+        blocked = [p for p in need if p in dead]
+        if blocked:
+            print(f"[{part}] SKIPPED: {blocked[0]} quota exhausted earlier ({dead[blocked[0]]}). "
+                  f"Run it later with: python run.py --grid free --part {part}")
+            continue
+        if args.workers:
+            workers = args.workers
+        else:
+            workers = max(1, sum(counts.get(p, 0) * PROVIDERS[p].KEY_CONCURRENCY for p in need))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if args.overwrite:
+            out.write_text("", encoding="utf-8")
+        print(f"[{part}] start: {len(runs)} episodes, workers={workers} -> {out}", flush=True)
+        stats = run_sweep(runs, out, workers=workers, max_usd=args.max_usd, cache=cache,
+                          engines=engines, errors_path=args.errors)
+        o = stats["outcomes"]
+        print(f"[{part}] n={stats['ok']} " + " ".join(f"{k}={o[k]}" for k in OUTCOMES)
+              + f" errors={stats['errors']} resumed_skip={stats['skipped_done']} "
+                f"not_started={stats['not_started']}", flush=True)
+        if stats.get("stopped_by_quota"):
+            dead[stats["stopped_by_quota"]] = stats["quota_message"]
+            print(f"[{part}] STOPPED CLEANLY on quota. Resume later with: "
+                  f"python run.py --grid free --part {part}", flush=True)
+    print(f"cost_usd at paid-tier prices (free tiers bill $0) spent={cache.spent_usd:.6f} cache hits={cache.hits} "
+          f"misses={cache.misses}")
+    if dead:
+        print("quota-stopped providers: " + ", ".join(sorted(dead)) + " (rerun to resume)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.grid == "free":
+        if args.mode == "agent":
+            raise NotImplementedError("--grid free runs single-call mode only")
+        return _run_free(args)
+    if args.part or args.all_tonight:
+        raise SystemExit("--part / --all-tonight need --grid free")
     if args.mode == "agent":
         raise NotImplementedError("--mode agent: the tool loop (planted/agent/loop.py) is not done; use --mode single")
     if args.prompt_style:
@@ -198,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.overwrite:
         out.write_text("", encoding="utf-8")
     cache = default_cache()
-    stats = run_sweep(runs, out, workers=args.workers, max_usd=args.max_usd, cache=cache,
+    stats = run_sweep(runs, out, workers=args.workers or 8, max_usd=args.max_usd, cache=cache,
                       engines=engines, errors_path=args.errors)
     o = stats["outcomes"]
     print(f"n={stats['ok']} " + " ".join(f"{k}={o[k]}" for k in OUTCOMES)

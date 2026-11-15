@@ -12,11 +12,16 @@
   bare id ("gpt-oss-120b"), the vendor id ("openai/gpt-oss-120b") or the LiteLLM name, in any
   case; canonical_model() maps any of them back to the short alias for episode ids and logs.
   gemini-2.5-flash-lite is retired (404 for new keys) and raises ValueError.
-- Keys come from .env (python-dotenv); existing environment variables win.
+- Keys come from .env (python-dotenv); existing environment variables win. Several keys per
+  provider (GEMINI_API_KEY, GEMINI_API_KEY_2 … _N; GROQ_API_KEY, GROQ_API_KEY_2 … _N) are rotated
+  by planted/providers/keys.py: per-key RPM / TPM limiters and concurrency, round-robin over the
+  keys with quota left. A daily-quota 429 marks that key exhausted and the call moves to another
+  key at once; when none is left, QuotaExhausted is raised. Keys appear in logs as "gemini#2".
 - Retries rate-limit (429), 5xx, timeout and connection errors with deterministic
-  exponential backoff (1, 2, 4, 8, 16 s), up to MAX_TRIES attempts in total.
-- A per-provider semaphore caps concurrent requests (Gemini 8, Groq 4). Change it with
-  set_concurrency() or the env var PLANTED_CONCURRENCY_<PROVIDER>, e.g. PLANTED_CONCURRENCY_GROQ=2.
+  exponential backoff (1, 2, 4, 8, 16 s), up to MAX_TRIES attempts in total (daily-quota 429s
+  that move to another key do not count as attempts).
+- A provider-wide semaphore (default 64, i.e. effectively off; the per-key caps are the real
+  limit) can be lowered with set_concurrency() or PLANTED_CONCURRENCY_<PROVIDER>.
 - seed is sent only when LiteLLM reports the provider supports it.
 - latency_ms times the successful attempt only, not backoff waits.
 Use planted.agent.cache.call_model_cached in experiments; this module never caches.
@@ -34,6 +39,9 @@ from typing import Any
 
 from planted.agent.pricing import cost_usd
 from planted.providers import gemini, groq
+from planted.providers.keys import (
+    QuotaExhausted, classify_429, error_headers, get_pool, is_rate_limit, parse_retry_after,
+)
 
 ROSTER = {
     "gflite31": "gemini/gemini-3.1-flash-lite",
@@ -200,18 +208,44 @@ def call_model(
     if _supports_seed(model):
         kwargs["seed"] = seed
     kwargs = PROVIDERS[provider].adjust_kwargs(kwargs)
+    litellm.suppress_debug_info = True  # its help banner can echo request details
 
-    for attempt in range(MAX_TRIES):
+    pool = get_pool(provider)
+    est_tokens = len(json.dumps(messages, ensure_ascii=False)) // 4 + max_tokens
+    attempt, daily_hits = 0, 0
+    while True:
+        lease = pool.acquire(est_tokens) if len(pool) else None  # may raise QuotaExhausted
+        if lease is not None:
+            kwargs["api_key"] = lease.api_key
         try:
             with _semaphore(provider):
                 t0 = time.perf_counter()
                 resp = litellm.completion(**kwargs)
                 latency_ms = int((time.perf_counter() - t0) * 1000)
-            break
         except Exception as e:  # noqa: BLE001 - filtered by _retryable
+            if lease is not None:
+                pool.release(lease, tokens_used=0, ok=False)
+                if is_rate_limit(e):
+                    text = str(e)
+                    retry_after = parse_retry_after(text, error_headers(e))
+                    if classify_429(text, retry_after) == "daily":
+                        pool.mark_exhausted(lease, retry_after)
+                        daily_hits += 1
+                        if daily_hits > 4 * len(pool):
+                            raise QuotaExhausted(provider, None, " (repeated daily 429s)") from None
+                        continue  # another key, no attempt used; acquire raises if none is left
+                    if retry_after is not None:
+                        pool.back_off(lease, retry_after)
             if attempt == MAX_TRIES - 1 or not _retryable(e):
                 raise
             _sleep(min(2.0**attempt, MAX_BACKOFF_S))
+            attempt += 1
+            continue
+        if lease is not None:
+            u = _get(resp, "usage")
+            pool.release(lease, tokens_used=int(_get(u, "prompt_tokens") or 0)
+                         + int(_get(u, "completion_tokens") or 0))
+        break
 
     choice = resp.choices[0]
     msg = choice.message
@@ -230,6 +264,6 @@ def call_model(
 
 
 __all__ = [
-    "MODEL_ALIASES", "ROSTER", "call_model", "canonical_model", "normalise_tool_calls",
+    "MODEL_ALIASES", "QuotaExhausted", "ROSTER", "call_model", "canonical_model", "normalise_tool_calls",
     "provider_of", "resolve_model", "set_concurrency",
 ]

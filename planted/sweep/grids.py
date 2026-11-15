@@ -18,6 +18,25 @@ support facts (95 of 120), so void questions get 8 conditions: (120 x 8 + 95 x 2
 the plan's nominal 12,000. Test questions in G, T4 and UG use the held-out bank (data/heldout/pages) when
 it exists; otherwise the main bank, with a loud warning (PLAN.md §6: say so in the paper).
 
+**Free-tier grid** (``build_free(part)`` or ``build_grid(part, "free")``; TEST split only, prompt style
+``neutral`` as preregistered, model gflite31 unless stated; questions picked by ``stratified()``: a
+seed-0 shuffle of the qid-sorted list within each regime, quotas by largest remainder, so smaller
+picks nest inside larger ones):
+
+| part | runs | layout |
+|---|---|---|
+| P1 AB  | 960 | 60 test Q x [k=0 + k in {1,2,3,5,8} x {wire, propaganda, blog}] T1, main bank (arm A) |
+| P2 G   | 800 | 40 test Q x {k=0 clean; T0 k=3; T1 k=3; T1 k=5; single_origin k=0} x {none, prompt, pagevote, guard}, held-out bank |
+| P3 REP | 180 | gptoss, 20 of the 40: [k=0; k in {3,8} x {wire, propaganda}] (A, main) + {none, guard} x {T0 k=3, T1 k=3} (G, held-out) |
+| P4 UR  | 180 | 30 urdu60 Q + their EN counterparts x [k=0; k in {3,8} x wire] T1, main bank (arm E) |
+| P5 D   | 320 | 40 test hedge150 claims x source_hedge {none, may, preliminary, disagree} x n_agree {1, 3}, main bank |
+| P6 G2  | 480 | the 40 of P2 x {T3 k=3, T3 k=8, T0 k=8, T1 k=8} x {none, pagevote, guard}, held-out bank |
+
+Substitutions (counted in the notes): void questions have no ``-so`` variant, so P2's single_origin
+cell for a void question uses the next unused non-void test question's ``-so`` variant (seed-0 order).
+A question whose pool is rejected for any of its part's conditions is replaced by the next unused
+question of the same regime (``plan_free``).
+
 Contract arms: A+B runs are logged as arm "A" (labels distinguish B); UG is logged as arm "G" with
 lang "ur" (no UG literal in contracts) and ``grid=UG`` in guard_summary.
 Every run's guard_summary carries ``grid=<name>``. Seeds are fixed (default 0).
@@ -26,6 +45,8 @@ Every run's guard_summary carries ``grid=<name>``. Seeds are fixed (default 0).
 from __future__ import annotations
 
 import json
+import random
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -49,6 +70,11 @@ HEDGES = ["none", "may", "preliminary", "disagree"]
 N_AGREE = [1, 3]
 PILOT_MODELS = ["gflite31", "gptoss"]
 PILOT_STYLES = ["hedge_ok", "neutral"]
+FREE_PARTS = ["P1", "P2", "P3", "P4", "P5", "P6"]
+FREE_NAMES = {"P1": "AB", "P2": "G", "P3": "REP", "P4": "UR", "P5": "D", "P6": "G2"}
+FREE_SIZES = {"P1": 960, "P2": 800, "P3": 180, "P4": 180, "P5": 320, "P6": 480}
+FREE_TONIGHT = ["P1", "P2", "P3"]
+FREE_STYLE = "neutral"   # PREREG.md §2: agent prompt style for all arms
 
 
 @dataclass(eq=False)
@@ -107,10 +133,12 @@ def _variants(base: list[Question], name: str, suffix: str) -> dict[str, Questio
 def build_grid(name: str, size: str = "full", styles: list[str] | None = None,
                models: list[str] | None = None, seed: int = 0) -> tuple[list[Run], list[str]]:
     """All runs of one grid (pool validity is checked later, by the runner's planner)."""
+    if size == "free":
+        return build_free(name, seed=seed)
     if name not in GRIDS:
         raise ValueError(f"unknown grid {name!r}; expected one of {GRIDS}")
     if size not in ("full", "pilot"):
-        raise ValueError("size must be 'full' or 'pilot'")
+        raise ValueError("size must be 'full', 'pilot' or 'free'")
     pilot = size == "pilot"
     notes: list[str] = []
     styles = styles or (PILOT_STYLES if pilot else ["hedge_ok"])
@@ -212,3 +240,187 @@ def est_cost_per_run(model: str) -> float:
     from planted.providers import resolve_model
 
     return cost_usd(resolve_model(model), EST_TOKENS_IN, EST_TOKENS_OUT)
+
+
+# =========================================================================== free-tier grid
+def _quotas(sizes: dict[str, int], n: int) -> dict[str, int]:
+    """Largest-remainder split of n over strata; ties go to the larger stratum, then by name."""
+    total = sum(sizes.values())
+    if n > total:
+        raise ValueError(f"asked for {n} questions, only {total} available")
+    exact = {r: n * c / total for r, c in sizes.items()}
+    q = {r: int(x) for r, x in exact.items()}
+    order = sorted(sizes, key=lambda r: (-(exact[r] - q[r]), -sizes[r], r))
+    for r in order[: n - sum(q.values())]:
+        q[r] += 1
+    return q
+
+
+def regime_order(qs: list[Question], seed: int = 0) -> dict[str, list[Question]]:
+    """regime -> its questions, qid-sorted then shuffled with Random(f"{seed}:{regime}")."""
+    by: dict[str, list[Question]] = {}
+    for q in sorted(qs, key=lambda q: q.qid):
+        by.setdefault(q.regime, []).append(q)
+    for r, lst in by.items():
+        random.Random(f"{seed}:{r}").shuffle(lst)
+    return by
+
+
+def stratified(qs: list[Question], n: int, seed: int = 0) -> list[Question]:
+    """n questions, stratified by regime (deterministic; smaller n nests in larger n). qid-sorted."""
+    by = regime_order(qs, seed)
+    quota = _quotas({r: len(v) for r, v in by.items()}, n)
+    return sorted((q for r, v in by.items() for q in v[: quota[r]]), key=lambda q: q.qid)
+
+
+def _test_only(qs: list[Question], what: str) -> list[Question]:
+    bad = [q.qid for q in qs if q.split != "test"]
+    if bad:
+        raise AssertionError(f"{what}: non-test questions {bad[:5]}")
+    return qs
+
+
+def _free_questions(seed: int = 0) -> dict:
+    """The question picks shared by the parts (all test split)."""
+    test = _test_only(load_q("test"), "test.jsonl")
+    hedge = [q for q in load_q("hedge150") if q.split == "test"]
+    ur = _test_only(load_q("urdu60"), "urdu60")
+    return {"test": test, "q60": stratified(test, 60, seed), "q40": stratified(test, 40, seed),
+            "q20": stratified(test, 20, seed), "ur30": stratified(ur, 30, seed),
+            "hedge40": stratified(hedge, 40, seed)}
+
+
+def _free_items(part: str, qs: list[Question], extra: dict, seed: int) -> list[tuple]:
+    """[(question, condition-without-model, bank)] for one base question of a part."""
+    c, main, held = _cond, str(BANK_MAIN), str(BANK_HELDOUT)
+    out = []
+    for q in qs:
+        L = q.lang
+        if part == "P1":
+            out.append((q, c("A", 0, None, "T1", L, "none", "gflite31", seed), main))
+            out += [(q, c("A", k, lab, "T1", L, "none", "gflite31", seed), main)
+                    for k in DOSES for lab in LABELS]
+        elif part == "P2":
+            so = extra["so"][q.qid]
+            for dfn in ("none", "prompt", "pagevote", "guard"):
+                out.append((q, c("G", 0, None, None, L, dfn, "gflite31", seed), held))
+                out += [(q, c("G", k, None, t, L, dfn, "gflite31", seed), held)
+                        for t, k in (("T0", 3), ("T1", 3), ("T1", 5))]
+                out.append((so, c("G", 0, None, None, so.lang, dfn, "gflite31", seed), held))
+        elif part == "P3":
+            out.append((q, c("A", 0, None, "T1", L, "none", "gptoss", seed), main))
+            out += [(q, c("A", k, lab, "T1", L, "none", "gptoss", seed), main)
+                    for k in (3, 8) for lab in ("wire", "propaganda")]
+            out += [(q, c("G", k, None, t, L, dfn, "gptoss", seed), held)
+                    for dfn in ("none", "guard") for t, k in (("T0", 3), ("T1", 3))]
+        elif part == "P4":
+            out.append((q, c("E", 0, None, None, L, "none", "gflite31", seed), main))
+            out += [(q, c("E", k, "wire", "T1", L, "none", "gflite31", seed), main) for k in (3, 8)]
+        elif part == "P5":
+            out += [(q, c("D", 0, None, None, L, "none", "gflite31", seed, h, n), main)
+                    for h in HEDGES for n in N_AGREE]
+        elif part == "P6":
+            out += [(q, c("G", k, None, t, L, dfn, "gflite31", seed), held)
+                    for t, k in (("T3", 3), ("T3", 8), ("T0", 8), ("T1", 8))
+                    for dfn in ("none", "pagevote", "guard")]
+        else:
+            raise ValueError(f"unknown free part {part!r}; expected one of {FREE_PARTS}")
+    return out
+
+
+def _so_map(base: list[Question], test: list[Question], seed: int, notes: list[str]) -> dict:
+    """base qid -> single-origin question; voids borrow an unused non-void test question's -so."""
+    so_all = {q.qid.removesuffix("-so"): q for q in load_q("single_origin") if q.split == "test"}
+    used = {q.qid for q in base}
+    spare = [q for r, lst in regime_order(test, seed).items() if r != "void" for q in lst]
+    spare = [q for q in sorted(spare, key=lambda q: q.qid) if q.qid not in used and q.qid in so_all]
+    random.Random(f"{seed}:so-sub").shuffle(spare)
+    out, subs = {}, []
+    for q in base:
+        if q.qid in so_all:
+            out[q.qid] = so_all[q.qid]
+        else:
+            sub = spare.pop(0)
+            out[q.qid] = so_all[sub.qid]
+            subs.append(f"{q.qid}->{so_all[sub.qid].qid}")
+    if subs:
+        notes.append(f"P2 single_origin substitutions: {len(subs)} (no -so variant): {', '.join(subs)}")
+    return out
+
+
+def _part_base(part: str, picks: dict) -> tuple[list[Question], list[Question]]:
+    """(base questions, reserve pool of the same population) for a part."""
+    if part == "P1":
+        return picks["q60"], picks["test"]
+    if part in ("P2", "P6"):
+        return picks["q40"], picks["test"]
+    if part == "P3":
+        return picks["q20"], picks["test"]
+    if part == "P5":
+        hedge = [q for q in load_q("hedge150") if q.split == "test"]
+        return picks["hedge40"], hedge
+    if part == "P4":
+        en = {q.qid: q for q in picks["test"]}
+        missing = [q.qid for q in picks["ur30"] if q.qid.removesuffix("-ur") not in en]
+        if missing:
+            raise AssertionError(f"P4: Urdu qids without a TEST English counterpart: {missing}")
+        return picks["ur30"], _test_only(load_q("urdu60"), "urdu60")
+    raise ValueError(f"unknown free part {part!r}; expected one of {FREE_PARTS}")
+
+
+def build_free(part: str, seed: int = 0, engines: dict | None = None,
+               check_pools: bool = False) -> tuple[list[Run], list[str]]:
+    """Runs of one free-tier part. With ``check_pools``, questions whose pools are rejected are
+    replaced by the next unused question of the same regime (counted in the notes)."""
+    if part not in FREE_PARTS:
+        raise ValueError(f"unknown free part {part!r}; expected one of {FREE_PARTS}")
+    notes: list[str] = []
+    picks = _free_questions(seed)
+    base, population = _part_base(part, picks)
+    if part == "P4":  # Urdu Q followed by their English counterparts
+        en = {q.qid: q for q in picks["test"]}
+    extra = {"so": _so_map(base, picks["test"], seed, notes)} if part == "P2" else {}
+
+    def items_for(q):
+        if part == "P4":
+            return _free_items(part, [q, en[q.qid.removesuffix("-ur")]], extra, seed)
+        return _free_items(part, [q], extra, seed)
+
+    chosen = list(base)
+    if check_pools:
+        from planted.engine import MockEngine, PoolError
+
+        engines = {} if engines is None else engines
+        reserve = {r: [q for q in lst if q.qid not in {b.qid for b in base}]
+                   for r, lst in regime_order(population, seed).items()}
+
+        def rejected(q) -> str | None:
+            for qq, cond, bank in items_for(q):
+                eng = engines.get(bank) or engines.setdefault(bank, MockEngine.from_bank(bank, []))
+                try:
+                    eng.build_pool(qq, cond)
+                except PoolError as e:
+                    return f"{qq.qid} k={cond.k} {cond.tier}/{cond.label}: {e}"
+            return None
+
+        subs = Counter()
+        for i, q in enumerate(chosen):
+            why = rejected(q)
+            while why is not None:
+                pool = reserve.get(q.regime, [])
+                if not pool:
+                    raise AssertionError(f"{part}: no reserve {q.regime} question to replace {q.qid} ({why})")
+                new = pool.pop(0)
+                notes.append(f"{part} substitution: {q.qid} -> {new.qid} ({why})")
+                subs[q.regime] += 1
+                q = chosen[i] = new
+                if part == "P2":
+                    extra["so"].update(_so_map([new], picks["test"], seed, notes))
+                why = rejected(q)
+        notes.append(f"{part} pool substitutions: {sum(subs.values())}"
+                     + (f" ({dict(subs)})" if subs else ""))
+
+    runs = [Run(f"free-{part}", qq, cond, FREE_STYLE, bank)
+            for q in chosen for qq, cond, bank in items_for(q)]
+    _test_only([r.question for r in runs], f"free {part}")
+    return runs, notes

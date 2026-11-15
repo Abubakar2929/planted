@@ -12,6 +12,12 @@
 - **Budget:** ``max_usd`` is checked against real spend (``cache.spent_usd``, cache misses only)
   before every submission. Once reached, nothing new starts; the runs already in flight (at most
   ``workers``) finish and are logged, so spend can pass the cap by at most ``workers`` runs.
+- **Quota:** if a run raises ``QuotaExhausted`` (every key of a provider hit its daily quota),
+  nothing new starts, the runs in flight finish and are logged, and the sweep returns with
+  ``stats["stopped_by_quota"] = <provider>``. The quota-stopped runs are not logged as errors, so
+  rerunning the same command later resumes where it stopped.
+- **Secrets:** error text is passed through ``planted.providers.keys.redact`` before it is written,
+  so a key value never reaches logs/errors.jsonl.
 - **Progress:** a tqdm bar, and a spend line every ``report_every`` finished episodes.
 """
 
@@ -27,6 +33,8 @@ from pathlib import Path
 from typing import Callable
 
 from tqdm import tqdm
+
+from planted.providers.keys import QuotaExhausted, redact
 
 
 def done_ids(path: str | Path) -> tuple[set[str], int]:
@@ -105,7 +113,8 @@ def run_sweep(runs: list, out: str | Path, *, workers: int = 8, max_usd: float |
     err_path.parent.mkdir(parents=True, exist_ok=True)
     err_lock = threading.Lock()
     stats = {"skipped_done": len(runs) - len(todo), "unreadable_lines": bad, "ok": 0, "errors": 0,
-             "not_started": 0, "stopped_by_budget": False, "outcomes": Counter()}
+             "not_started": 0, "stopped_by_budget": False, "stopped_by_quota": None,
+             "quota_message": None, "outcomes": Counter()}
     start_spent = cache.spent_usd
 
     def spent() -> float:
@@ -114,13 +123,16 @@ def run_sweep(runs: list, out: str | Path, *, workers: int = 8, max_usd: float |
     def log_error(run, e: BaseException) -> None:
         rec = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                "episode_id": run.episode_id, "grid": getattr(run, "grid", None),
-               "error": f"{type(e).__name__}: {e}",
-               "traceback": "".join(traceback.format_exception(e))[-2000:]}
+               "error": redact(f"{type(e).__name__}: {e}"),
+               "traceback": redact("".join(traceback.format_exception(e)))[-2000:]}
         with err_lock, open(err_path, "a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
     def job(run):
         return run_fn(run, logger, cache)
+
+    def say(msg: str) -> None:
+        tqdm.write(msg) if progress else print(msg, flush=True)
 
     bar = tqdm(total=len(todo), disable=not progress, dynamic_ncols=True)
     finished = 0
@@ -136,6 +148,8 @@ def run_sweep(runs: list, out: str | Path, *, workers: int = 8, max_usd: float |
     with ThreadPoolExecutor(max_workers=workers) as pool:
         while True:
             while len(pending) < workers:
+                if stats["stopped_by_quota"]:
+                    break
                 if max_usd is not None and spent() >= max_usd:
                     stats["stopped_by_budget"] = True
                     break
@@ -152,6 +166,14 @@ def run_sweep(runs: list, out: str | Path, *, workers: int = 8, max_usd: float |
                     line = fut.result()
                     stats["ok"] += 1
                     stats["outcomes"][getattr(line, "outcome", "?")] += 1
+                except QuotaExhausted as e:  # stop starting new runs; this one resumes later
+                    stats["quota_stopped_runs"] = stats.get("quota_stopped_runs", 0) + 1
+                    if not stats["stopped_by_quota"]:
+                        stats["stopped_by_quota"] = e.provider
+                        stats["quota_message"] = redact(str(e))
+                        say(f"[sweep] QUOTA: {stats['quota_message']}; finishing {len(pending)} "
+                            f"in-flight runs, then stopping")
+                    continue
                 except Exception as e:  # noqa: BLE001 - log and keep going
                     stats["errors"] += 1
                     log_error(r, e)
@@ -160,7 +182,7 @@ def run_sweep(runs: list, out: str | Path, *, workers: int = 8, max_usd: float |
                 bar.set_postfix_str(f"${spent():.3f}")
                 if report_every and finished % report_every == 0:
                     report()
-            if stats["stopped_by_budget"] and not pending:
+            if (stats["stopped_by_budget"] or stats["stopped_by_quota"]) and not pending:
                 break
     bar.close()
     stats["not_started"] = len(todo) - finished
@@ -169,5 +191,8 @@ def run_sweep(runs: list, out: str | Path, *, workers: int = 8, max_usd: float |
         msg = (f"[sweep] STOPPED: real spend ${spent():.4f} reached --max-usd {max_usd}; "
                f"{stats['not_started']} runs not started (rerun to resume)")
         tqdm.write(msg) if progress else print(msg, flush=True)
+    if stats["stopped_by_quota"]:
+        say(f"[sweep] STOPPED: {stats['quota_message']}. {stats['ok']} runs logged to {out}; "
+            f"{stats['not_started']} not done. Rerun the same command after the reset to resume.")
     report()
     return stats

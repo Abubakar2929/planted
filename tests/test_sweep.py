@@ -164,3 +164,109 @@ def test_run_py_appends_by_default(tmp_path, monkeypatch):
     assert "old" in seen["text"]
     run_mod.main(["--arm", "A", "--limit", "1", "--out", str(out), "--overwrite"])
     assert seen["text"] == ""
+
+
+# --------------------------------------------------------------------------- free-tier grid
+@pytest.mark.skipif(not HAVE_DATA, reason="no question files")
+@pytest.mark.parametrize("part,n", [("P1", 960), ("P2", 800), ("P3", 180), ("P4", 180),
+                                    ("P5", 320), ("P6", 480)])
+def test_free_grid_sizes_and_test_split(part, n):
+    from planted.sweep.grids import FREE_SIZES, build_free
+
+    runs, _ = build_free(part)
+    assert len(runs) == n == FREE_SIZES[part]
+    assert len({r.episode_id for r in runs}) == n
+    assert all(r.question.split == "test" for r in runs)
+    assert {r.style for r in runs} == {"neutral"}  # preregistered prompt style
+
+
+@pytest.mark.skipif(not HAVE_DATA, reason="no question files")
+def test_free_grid_question_picks():
+    from planted.sweep.grids import build_free, load_q, stratified
+
+    test = load_q("test")
+    q60, q40, q20 = (stratified(test, n) for n in (60, 40, 20))
+    assert {q.qid for q in q20} <= {q.qid for q in q40} <= {q.qid for q in q60}  # nested
+    assert Counter(q.regime for q in q40) == Counter(known=27, void=8, support=5)
+    assert stratified(test, 40) == q40  # deterministic
+    p2, notes = build_free("P2")
+    p6, _ = build_free("P6")
+    p3, _ = build_free("P3")
+    base = lambda runs: {r.question.qid for r in runs if r.question.regime != "single_origin"}
+    assert base(p2) == base(p6) == {q.qid for q in q40}
+    assert base(p3) == {q.qid for q in q20}
+    assert {r.cond.model for r in p3} == {"gptoss"} and {r.cond.model for r in p2} == {"gflite31"}
+    assert sum(r.question.regime == "single_origin" for r in p2) == 40 * 4
+    assert any("single_origin substitutions: 8" in n for n in notes)
+    p4, _ = build_free("P4")
+    assert Counter(r.question.lang for r in p4) == Counter(en=90, ur=90)
+
+
+def test_quota_exhausted_stops_runner_cleanly(tmp_path):
+    from planted.providers.keys import QuotaExhausted
+
+    out = tmp_path / "log.jsonl"
+    cache = SimpleNamespace(spent_usd=0.0, hits=0, misses=0)
+    calls, lock = [], threading.Lock()
+
+    def run_fn(run, logger, c):
+        with lock:
+            calls.append(run.episode_id)
+            n = len(calls)
+        if n > 5:
+            raise QuotaExhausted("gemini", 0.0)
+        line = _line(run.episode_id)
+        logger.write(line)
+        return line
+
+    err = tmp_path / "e.jsonl"
+    stats = run_sweep(_runs(50), out, workers=2, cache=cache, run_fn=run_fn, errors_path=err,
+                      progress=False)
+    assert stats["stopped_by_quota"] == "gemini" and stats["errors"] == 0
+    assert stats["ok"] == 5 and stats["not_started"] == 45
+    assert len(calls) <= 5 + 2          # nothing new started after the quota error
+    assert not err.exists() or err.read_text(encoding="utf-8") == ""
+    # resume continues where it stopped
+    calls.clear()
+    stats = run_sweep(_runs(50), out, workers=2, cache=cache,
+                      run_fn=lambda r, lg, c: (lg.write(_line(r.episode_id)), _line(r.episode_id))[1],
+                      errors_path=err, progress=False)
+    assert stats["skipped_done"] == 5 and stats["ok"] == 45
+    assert len(done_ids(out)[0]) == 50
+
+
+@pytest.mark.skipif(not HAVE_DATA, reason="no question files")
+def test_run_py_free_dry_run(capsys, monkeypatch):
+    import run as run_mod
+
+    monkeypatch.chdir(ROOT)
+    assert run_mod.main(["--grid", "free", "--all-tonight", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "keys found: gemini=" in out
+    for part, n in (("P1", 960), ("P2", 800), ("P3", 180)):
+        assert f"part {part} " in out and f"episodes={n} skipped=0" in out
+    assert "logs" in out and "test_free_P1.jsonl" in out
+
+
+def test_all_tonight_skips_parts_whose_provider_ran_out(monkeypatch, capsys):
+    import run as run_mod
+    import planted.sweep.runner as runner_mod
+    import planted.agent.cache as cache_mod
+
+    if not HAVE_DATA:
+        pytest.skip("no question files")
+    monkeypatch.chdir(ROOT)
+    ran = []
+
+    def fake_sweep(runs, path, **kw):
+        ran.append(Path(path).name)
+        quota = "gemini" if Path(path).name == "test_free_P1.jsonl" else None
+        return {"outcomes": Counter(), "ok": 0, "errors": 0, "skipped_done": 0, "not_started": 0,
+                "stopped_by_quota": quota, "quota_message": "all gemini keys exhausted"}
+
+    monkeypatch.setattr(runner_mod, "run_sweep", fake_sweep)
+    monkeypatch.setattr(cache_mod, "default_cache",
+                        lambda: SimpleNamespace(spent_usd=0.0, hits=0, misses=0))
+    assert run_mod.main(["--grid", "free", "--all-tonight"]) == 0
+    assert ran == ["test_free_P1.jsonl", "test_free_P3.jsonl"]   # P2 (gemini) skipped, P3 (groq) ran
+    assert "[P2] SKIPPED" in capsys.readouterr().out

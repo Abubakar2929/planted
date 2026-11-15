@@ -365,3 +365,81 @@ The temp folders were deleted afterwards.
 `cov_cluster` divides by (clusters − 1) = 0. The first 50 pilot lines are one question, as was the
 Gate 1 log. Suggest returning "not run: < 2 questions" when `data[cluster].nunique() < 2`. Harmless on
 real sweeps.
+
+## A10: free-tier test sweeps with team-key rotation (2026-11-15; code ready, sweep NOT started)
+
+Files: `planted/providers/keys.py` (new), `planted/providers/{__init__,gemini,groq}.py`,
+`planted/sweep/{grids,runner}.py`, `run.py`, `scripts/smoke_keys.py`, `tests/test_backends.py` (new),
+`tests/test_sweep.py`. Full suite: 291 passed, 2 skipped.
+
+### Key rotation
+
+- Keys: `GEMINI_API_KEY`, `GEMINI_API_KEY_2` … `_N`; `GROQ_API_KEY`, `GROQ_API_KEY_2` … `_N` (blank and
+  duplicate values ignored). Logged only as `gemini#2` etc.; error text is passed through
+  `keys.redact()` before it reaches `logs/errors.jsonl`.
+- Per key: Gemini 14 RPM, 2 in flight; Groq 25 RPM, 7,000 tokens/min (a call reserves
+  chars/4 + max_tokens and is corrected to real usage when it ends), 1 in flight. Round-robin over keys
+  with room. The provider-wide semaphore defaults to 64 (effectively off).
+- 429 "per day" / "PerDay" / RPD / TPD / retry-after > 1 h -> key exhausted until the stated
+  retry-after (else next midnight Pacific for Gemini, +1 h for Groq) and the call moves to the next
+  key with no retry used. Other 429s -> that key backs off for the stated retry-after; the
+  existing 1, 2, 4 … s retry still applies. All keys exhausted -> `QuotaExhausted`.
+- Runner: on `QuotaExhausted`, nothing new starts, in-flight runs finish and are logged, the
+  quota-stopped runs are not logged as errors, and rerunning the same command resumes.
+  `--all-tonight` then skips later parts that need the exhausted provider (P2 after P1 on Gemini) but
+  still runs parts on the other provider (P3 on Groq).
+- Cache key unchanged: resolved model id + seed + temperature + max_tokens + messages + tools (+
+  prompt style). The key identity is not in it (tested).
+
+### Free grid (`--grid free`, TEST split only, prompt style `neutral`)
+
+Questions: a seed-0 shuffle within each regime of the qid-sorted list, with quotas by largest
+remainder (chosen over plain qid order, which would have given only `known` questions). Picks nest
+(20 ⊂ 40 ⊂ 60). 60 = 40 known / 13 void / 7 support; 40 = 27 / 8 / 5; 20 = 14 / 4 / 2; Urdu 30 =
+20 known / 6 void / 4 support.
+
+| part | episodes | bank | dry-run notes |
+|---|---|---|---|
+| P1 AB | 960 | main | 0 pool substitutions |
+| P2 G | 800 | held-out | 8 single_origin substitutions (void Q have no `-so`; next unused non-void `-so`, seed-0 order): pl-void-003->pl-known-028-so, pl-void-004->pl-known-034-so, pl-void-006->pl-known-069-so, pl-void-010->pl-support-004-so, pl-void-018->pl-known-076-so, pl-void-021->pl-support-008-so, pl-void-022->pl-known-014-so, pl-void-023->pl-known-060-so; 0 pool substitutions |
+| P3 REP | 180 | main (A part) + held-out (G part) | gptoss; 0 pool substitutions |
+| P4 UR | 180 | main | 90 EN + 90 UR; 0 |
+| P5 D | 320 | main | 0 |
+| P6 G2 | 480 | held-out | 0 |
+
+Logs go to `logs/test_free_<part>.jsonl` (append + resume). Episode ids carry `-neutral`, because
+`single_call.DEFAULT_STYLE` is still `hedge_ok` (that file is not in this task's write scope).
+Est. cost at paid prices: P1 $1.04, P2 $0.87, P3 $0.10, P4 $0.20, P5 $0.35, P6 $0.52 (billed $0 on
+free tiers).
+
+### Keys and smoke check (`python scripts/smoke_keys.py`, 2026-11-15 ~21:30 local)
+
+Keys found: **Gemini 5, Groq 5.**
+
+| provider | OK | QUOTA_EXHAUSTED | INVALID |
+|---|---|---|---|
+| Gemini | 4 (#2–#5) | 1 (#1, retry after ~15.5 h) | 0 |
+| Groq | 5 | 0 | 0 |
+
+Throughput, 20 tiny Gemini calls over the 4 live keys (8 workers), two runs: **24.6 and 29.0
+requests/min**, with 0 per-minute and 0 daily 429s. The rate is limited by latency, not by the
+14 RPM per-key limit (56/min at 4 keys): median latency 5.7 s, max 30 s, and gemini#2, #3 and #5
+were much slower (16–21 s for one call) than gemini#4 (0.6 s). Real runs send ~2,500-token prompts,
+so they may be slower than this.
+
+### Estimated time for tonight (P1 -> P2 -> P3)
+
+| part | runs | basis | estimate |
+|---|---|---|---|
+| P1 | 960 | Gemini, 4 keys, 29 req/min measured (limit 56) | ~35 min (17 min at the RPM limit) |
+| P2 | 800 | same, plus local Guard CPU time on 200 guard runs | ~30 min (14 min at the RPM limit) + Guard time (not measured here) |
+| P3 | 180 | Groq, 5 keys x 7,000 TPM / ~2,850 tokens per run = ~12 runs/min | ~15 min |
+
+Daily quotas: P1 + P2 need 1,760 Gemini requests. 4 live keys x 500 = 2,000, less what keys #2–#5
+already used today (not known; ~48 calls by these smoke checks). P3 needs ~510k Groq tokens. 5 keys
+x 200k = 1M. If Gemini runs out, P1/P2 stop cleanly and resume after the reset. If team keys share
+a Google Cloud project, they share one 500/day quota (gemini#1 exhausted while #2–#5 still answer
+suggests that at least #1 has its own project).
+
+Command (user starts it): `python run.py --grid free --all-tonight`. Spend for BUDGET.md: smoke
+checks ~2 x 30 tiny calls on free tiers, $0 billed.

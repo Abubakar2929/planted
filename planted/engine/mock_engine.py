@@ -29,6 +29,14 @@ Pool rules (``build_pool``), always exactly 10 pages
   it is not used. Same condition -> same order on every run.
 
 Too few matching pages raises ``PoolError`` naming the group that is short.
+
+Bank mode (``MockEngine.from_bank``)
+------------------------------------
+For B's real page banks (``data/pages/main``, ``data/heldout/pages``) the pool rules above are
+replaced by ``data.pools.build_pool(bank, question, cond)``, which documents its own rules; its
+``ValueError`` is re-raised as ``PoolError``. ``search`` / ``open_url`` / ``episode_*`` behave the
+same in both modes and never return the hidden fields (planted, campaign_id, label, tier,
+asserted_answer, source_hedge).
 """
 
 from __future__ import annotations
@@ -41,14 +49,12 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from contracts.schemas import Condition, Page, Question, SearchResult
+from planted.providers import canonical_model
 
 POOL_SIZE = 10
 NOT_FOUND = "Page not found"
 
-# Short model names for episode ids; unknown models fall back to an alphanumeric slug.
-MODEL_SHORT = {
-    "gemini-2.5-flash-lite": "gflite",
-}
+HIDDEN_FIELDS = ("planted", "campaign_id", "label", "tier", "asserted_answer", "source_hedge")
 
 
 class PoolError(ValueError):
@@ -70,9 +76,11 @@ def _qid_from_url(url: str) -> str | None:
 
 
 def _model_short(model: str) -> str:
-    if model in MODEL_SHORT:
-        return MODEL_SHORT[model]
-    return re.sub(r"[^a-z0-9]", "", model.rsplit("/", 1)[-1].lower())
+    """Roster alias (planted.providers.canonical_model); other models -> alphanumeric slug."""
+    try:
+        return canonical_model(model)
+    except ValueError:
+        return re.sub(r"[^a-z0-9]", "", model.rsplit("/", 1)[-1].lower())
 
 
 def make_episode_id(cond: Condition, qid: str) -> str:
@@ -114,12 +122,41 @@ class MockEngine:
                     self.pages_by_qid[qid].append(page)
                 else:
                     self.unindexed.append(page.url)
+        self.bank = None  # data.pools.PageBank in bank mode
         self._pools: dict[str, list[Page]] = {}
         self._traces: dict[str, dict[str, list[str]]] = {}
+
+    @classmethod
+    def from_bank(cls, bank_dir: str, question_paths: list[str]) -> MockEngine:
+        """Bank mode: pages from ``data.pools.PageBank.load(bank_dir)``, questions from
+        ``data.pools.load_questions`` (qids must be unique across files), pools from
+        ``data.pools.build_pool``."""
+        from data.pools import PageBank, load_questions
+
+        eng = cls.__new__(cls)
+        eng.questions = {}
+        for path in [question_paths] if isinstance(question_paths, (str, Path)) else question_paths:
+            for q in load_questions(path):
+                if q.qid in eng.questions:
+                    raise ValueError(f"duplicate qid {q.qid!r} in {path}")
+                eng.questions[q.qid] = q
+        eng.bank = PageBank.load(bank_dir)
+        eng.pages_by_qid = {}
+        eng.unindexed = []
+        eng._pools = {}
+        eng._traces = {}
+        return eng
 
     make_episode_id = staticmethod(make_episode_id)
 
     def build_pool(self, question: Question, cond: Condition) -> list[Page]:
+        if self.bank is not None:
+            from data.pools import build_pool
+
+            try:
+                return build_pool(self.bank, question, cond)
+            except ValueError as e:
+                raise PoolError(str(e)) from e
         qid = question.qid
         pages = [p for p in self.pages_by_qid.get(qid, []) if p.lang == cond.lang]
         where = f"qid={qid} lang={cond.lang}"

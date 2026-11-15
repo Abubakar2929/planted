@@ -6,7 +6,12 @@
     {"content": str, "tool_calls": [{"id", "name", "arguments": dict}], "tokens_in": int,
      "tokens_out": int, "latency_ms": int, "cost_usd": float, "raw_finish_reason": str | None}
 
-- Model aliases: gflite, gflite31, gptoss (see MODEL_ALIASES); full LiteLLM names also work.
+- Model roster (ROSTER): gflite31 = gemini/gemini-3.1-flash-lite (default, Guard model 1),
+  gptoss = groq/openai/gpt-oss-120b (Guard model 2), gptoss20 = groq/openai/gpt-oss-20b (third
+  bench model). "gflite" is a synonym of gflite31. resolve_model() accepts the short alias, the
+  bare id ("gpt-oss-120b"), the vendor id ("openai/gpt-oss-120b") or the LiteLLM name, in any
+  case; canonical_model() maps any of them back to the short alias for episode ids and logs.
+  gemini-2.5-flash-lite is retired (404 for new keys) and raises ValueError.
 - Keys come from .env (python-dotenv); existing environment variables win.
 - Retries rate-limit (429), 5xx, timeout and connection errors with deterministic
   exponential backoff (1, 2, 4, 8, 16 s), up to MAX_TRIES attempts in total.
@@ -30,11 +35,14 @@ from typing import Any
 from planted.agent.pricing import cost_usd
 from planted.providers import gemini, groq
 
-MODEL_ALIASES = {
-    "gflite": "gemini/gemini-2.5-flash-lite",
+ROSTER = {
     "gflite31": "gemini/gemini-3.1-flash-lite",
     "gptoss": "groq/openai/gpt-oss-120b",
+    "gptoss20": "groq/openai/gpt-oss-20b",
 }
+SYNONYMS = {"gflite": "gflite31"}
+MODEL_ALIASES = {**ROSTER, **{s: ROSTER[a] for s, a in SYNONYMS.items()}}
+RETIRED = {"gemini-2.5-flash-lite": "404 'no longer available to new users'; use gflite31"}
 PROVIDERS: dict[str, ModuleType] = {gemini.PROVIDER: gemini, groq.PROVIDER: groq}
 MAX_TRIES = 6
 MAX_BACKOFF_S = 60.0
@@ -45,8 +53,41 @@ _sem_lock = threading.Lock()
 _env_loaded = False
 
 
+def _long_forms(full: str) -> list[str]:
+    """``groq/openai/gpt-oss-120b`` -> itself, ``openai/gpt-oss-120b``, ``gpt-oss-120b``."""
+    parts = full.split("/")
+    return ["/".join(parts[i:]) for i in range(len(parts))]
+
+
+_NAME_TO_ALIAS: dict[str, str] = {}
+for _alias, _full in ROSTER.items():
+    for _name in [_alias, *_long_forms(_full)]:
+        _NAME_TO_ALIAS[_name] = _alias
+for _syn, _alias in SYNONYMS.items():
+    _NAME_TO_ALIAS[_syn] = _alias
+
+
+def _lookup(model: str) -> str | None:
+    key = model.strip().lower()
+    if key.rsplit("/", 1)[-1] in RETIRED:
+        raise ValueError(f"model {model!r} is retired: {RETIRED[key.rsplit('/', 1)[-1]]}")
+    return _NAME_TO_ALIAS.get(key)
+
+
 def resolve_model(model: str) -> str:
-    return MODEL_ALIASES.get(model, model)
+    """Any roster name form -> LiteLLM name. Names outside the roster pass through unchanged."""
+    alias = _lookup(model)
+    return ROSTER[alias] if alias else model
+
+
+def canonical_model(model: str) -> str:
+    """Any roster name form -> short alias (``gflite31``, ``gptoss``, ``gptoss20``).
+
+    Raises ValueError for a model outside the roster."""
+    alias = _lookup(model)
+    if alias is None:
+        raise ValueError(f"model {model!r} is not in the roster {list(ROSTER)}")
+    return alias
 
 
 def provider_of(model: str) -> str:
@@ -189,6 +230,6 @@ def call_model(
 
 
 __all__ = [
-    "MODEL_ALIASES", "call_model", "normalise_tool_calls", "provider_of", "resolve_model",
-    "set_concurrency",
+    "MODEL_ALIASES", "ROSTER", "call_model", "canonical_model", "normalise_tool_calls",
+    "provider_of", "resolve_model", "set_concurrency",
 ]

@@ -12,7 +12,7 @@ from typing import Any
 
 PROVIDER = "gemini"
 KEY_ENV = "GEMINI_API_KEY"
-DEFAULT_MODEL = "gemini/gemini-2.5-flash-lite"
+DEFAULT_MODEL = "gemini/gemini-3.1-flash-lite"
 DEFAULT_CONCURRENCY = 8
 
 

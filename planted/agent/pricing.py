@@ -4,10 +4,14 @@
 from __future__ import annotations
 
 PRICES: dict[str, tuple[float, float]] = {
+    # Retired from the roster (404 for new keys); kept so old logs can still be priced.
     "gemini/gemini-2.5-flash-lite": (0.10, 0.40),
     "gemini/gemini-3.1-flash-lite": (0.25, 1.50),
     # UNVERIFIED: check the Groq console price for gpt-oss-120b, update here and BUDGET.md.
     "groq/openai/gpt-oss-120b": (0.15, 0.60),
+    # UNVERIFIED: groq.com/pricing returned no price table on 2026-11-15; this is the last
+    # known Groq list price for gpt-oss-20b. Check the console, update here and BUDGET.md.
+    "groq/openai/gpt-oss-20b": (0.075, 0.30),
 }
 
 

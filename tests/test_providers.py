@@ -21,7 +21,7 @@ def fake_response(tool_calls=None, content="", pt=100, ct=20, finish="stop"):
 
 
 def test_aliases():
-    assert resolve_model("gflite") == "gemini/gemini-2.5-flash-lite"
+    assert resolve_model("gflite") == "gemini/gemini-3.1-flash-lite"
     assert resolve_model("gflite31") == "gemini/gemini-3.1-flash-lite"
     assert resolve_model("gptoss") == "groq/openai/gpt-oss-120b"
     assert resolve_model("gemini/x") == "gemini/x"

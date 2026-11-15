@@ -41,7 +41,7 @@ def test_cache_hit_identical_and_no_second_call(tmp_path, counting_completion):
     assert (cache.hits, cache.misses) == (1, 1)
     assert cache.spent_usd == pytest.approx(a["cost_usd"])
     # Alias and full name share an entry; a fresh Cache object on the same file still hits.
-    c = call_model_cached("gemini/gemini-2.5-flash-lite", MSGS, seed=0, cache=Cache(cache.path))
+    c = call_model_cached("gemini/gemini-3.1-flash-lite", MSGS, seed=0, cache=Cache(cache.path))
     assert c == a and counting_completion["n"] == 1
 
 
@@ -50,7 +50,7 @@ def test_cache_key_changes_with_inputs():
     k = cache_key(**base)
     assert cache_key(**(base | {"seed": 1})) != k
     assert cache_key(**(base | {"max_tokens": 401})) != k
-    assert cache_key(**(base | {"model": "gemini/gemini-2.5-flash-lite"})) == k
+    assert cache_key(**(base | {"model": "gemini/gemini-3.1-flash-lite"})) == k
 
 
 def test_cache_threads(tmp_path, counting_completion):

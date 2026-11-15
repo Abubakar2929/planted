@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from planted.agent.pricing import cost_usd
 from planted.providers import PROVIDERS, call_model, provider_of, resolve_model
 
-MODELS = ["gflite", "gflite31", "gptoss"]
+MODELS = ["gflite31", "gptoss", "gptoss20"]  # the roster in planted.providers.ROSTER
 MAX_TOKENS = 400
 EST_TOKENS_IN = 200  # rough upper bound for the prompt + tool schema below
 

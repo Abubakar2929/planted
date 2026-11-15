@@ -28,7 +28,7 @@ def question(engine):
 def cond(**kw) -> Condition:
     base = dict(
         arm="A", k=3, label="wire", tier="T1", lang="en", source_hedge=None, n_agree=None,
-        defense="none", model="gemini-2.5-flash-lite", seed=0,
+        defense="none", model="gemini-3.1-flash-lite", seed=0,
     )
     return Condition(**(base | kw))
 
@@ -133,6 +133,6 @@ def test_pool_error_when_too_few(engine, question, kw, missing):
 
 
 def test_episode_id_format():
-    assert make_episode_id(cond(), "q017") == "A-k3-wire-T1-en-none-gflite-s0-q017"
+    assert make_episode_id(cond(), "q017") == "A-k3-wire-T1-en-none-gflite31-s0-q017"
     d = cond(arm="D", k=0, label=None, tier=None, source_hedge="may", n_agree=3)
-    assert make_episode_id(d, "q017") == "D-k0-na-na-en-hmay-a3-none-gflite-s0-q017"
+    assert make_episode_id(d, "q017") == "D-k0-na-na-en-hmay-a3-none-gflite31-s0-q017"

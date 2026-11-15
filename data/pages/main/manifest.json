@@ -1,8 +1,8 @@
 {
   "generator": "main",
   "seed": 0,
-  "backend": "offline",
-  "model": null,
+  "backend": "llm",
+  "model": "gemini/gemini-3.1-flash-lite",
   "embedder_t4": "char5-tfidf",
   "tiers": [
     "T0",
@@ -38,5 +38,53 @@
     "ur:planted:T3": 720,
     "ur:syndicated": 144
   },
-  "llm_stats": null
+  "llm_stats": {
+    "calls": 6,
+    "cache_hits": 1696,
+    "tokens_in": 1635,
+    "tokens_out": 1270,
+    "cost_usd": 0.00231375,
+    "fallbacks": 45,
+    "by_reason": {}
+  },
+  "llm_scope": {
+    "tiers": [
+      "T1"
+    ],
+    "langs": [
+      "en",
+      "ur"
+    ]
+  },
+  "written_by": {
+    "en:T0": {
+      "llm": 0,
+      "template": 960
+    },
+    "en:T1": {
+      "llm": 1148,
+      "template": 2692
+    },
+    "en:T3": {
+      "llm": 0,
+      "template": 720
+    },
+    "en:T4": {
+      "llm": 0,
+      "template": 960
+    },
+    "ur:T1": {
+      "llm": 303,
+      "template": 1137
+    },
+    "ur:T3": {
+      "llm": 0,
+      "template": 720
+    }
+  },
+  "llm_rejections": {
+    "hedged": 248,
+    "claim missing": 3,
+    "quota": 1
+  }
 }

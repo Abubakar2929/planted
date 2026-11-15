@@ -1,8 +1,8 @@
 {
   "generator": "heldout",
   "seed": 0,
-  "backend": "offline",
-  "model": null,
+  "backend": "llm",
+  "model": "groq/openai/gpt-oss-120b",
   "template_bank": "data/heldout/templates_{en,ur}.json",
   "embedder_t4": "char5-tfidf",
   "questions_covered": {
@@ -51,5 +51,56 @@
     "ur:planted:T3": 640,
     "ur:syndicated": 144
   },
-  "llm_stats": null
+  "llm_stats": {
+    "calls": 306,
+    "cache_hits": 121,
+    "tokens_in": 102554,
+    "tokens_out": 61262,
+    "cost_usd": 0.05214030000000002,
+    "fallbacks": 0,
+    "by_reason": {}
+  },
+  "llm_scope": {
+    "tiers": [
+      "T1"
+    ],
+    "langs": [
+      "en"
+    ]
+  },
+  "written_by": {
+    "en:T0": {
+      "llm": 0,
+      "template": 800
+    },
+    "en:T1": {
+      "llm": 410,
+      "template": 390
+    },
+    "en:T3": {
+      "llm": 0,
+      "template": 640
+    },
+    "en:T4": {
+      "llm": 0,
+      "template": 160
+    },
+    "ur:T0": {
+      "llm": 0,
+      "template": 480
+    },
+    "ur:T1": {
+      "llm": 0,
+      "template": 480
+    },
+    "ur:T3": {
+      "llm": 0,
+      "template": 640
+    }
+  },
+  "llm_rejections": {
+    "hedged": 15,
+    "claim missing": 2,
+    "quota": 1
+  }
 }

@@ -7,6 +7,8 @@ Writes (UTF-8 with BOM, so Excel / Google Sheets open the Urdu correctly):
     data/urdu/review_questions.csv   60 rows: EN question + answer next to the UR question + answer, plus one
                                      honest and one planted UR page sentence for each, and empty reviewer columns
     data/urdu/review_lexicon.csv     every UR hedge marker and qualifier, with its level
+    data/urdu/review_llm_pages.csv   a seeded sample of 30 Urdu pages written by the LLM (full title and body):
+                                     is it fluent, on-topic, free of real names and of any hedging?
 The reviewer fills `ok` (y/n), `correction` and `notes`; then run with --apply to record the verdicts in
 data/urdu/review_status.json (the paper reports the Urdu set as reviewer-approved only after that).
 """
@@ -16,17 +18,20 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import random
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE.parent
+N_LLM_SAMPLE = 30
+SHEETS = (("review_questions.csv", "questions"), ("review_lexicon.csv", "lexicon"), ("review_llm_pages.csv", "llm_pages"))
 
 
 def _rows(path: Path) -> list[dict]:
     return [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
 
 
-def build() -> tuple[int, int]:
+def build() -> tuple[int, int, int]:
     en = {q["qid"]: q for q in _rows(DATA / "questions" / "test.jsonl") + _rows(DATA / "questions" / "dev20.jsonl")}
     ur = _rows(DATA / "questions" / "urdu60.jsonl")
     pages = _rows(DATA / "pages" / "main" / "pages.jsonl")
@@ -59,7 +64,14 @@ def build() -> tuple[int, int]:
         for m in lex["abstain_markers"]:
             w.writerow(["abstain", "marker", m, "", "", ""])
             n_lex += 1
-    return len(ur), n_lex
+    llm = [(p, r) for p, r in zip(pages, index) if r["lang"] == "ur" and r.get("gen") == "llm"]
+    llm = sorted(random.Random(0).sample(llm, min(N_LLM_SAMPLE, len(llm))), key=lambda pr: pr[1]["url"])
+    with open(HERE / "review_llm_pages.csv", "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["qid", "label", "planted_answer_ur", "title_ur", "body_ur", "ok", "correction", "notes"])
+        for p, r in llm:
+            w.writerow([r["qid"], r["label"], p["asserted_answer"], p["title"], p["body"], "", "", ""])
+    return len(ur), n_lex, len(llm)
 
 
 def apply(reviewer: str, role: str = "author") -> dict:
@@ -67,7 +79,9 @@ def apply(reviewer: str, role: str = "author") -> dict:
     out = {"reviewer": reviewer, "reviewer_role": role, "questions": {}, "lexicon": {},
            "paper_wording": ("checked by an author who is a native Urdu speaker" if role == "author"
                              else "reviewed by an external native Urdu speaker")}
-    for name, key in (("review_questions.csv", "questions"), ("review_lexicon.csv", "lexicon")):
+    for name, key in SHEETS:
+        if not (HERE / name).exists():
+            continue
         with open(HERE / name, encoding="utf-8-sig", newline="") as f:
             rows = list(csv.DictReader(f))
         ok = sum(r["ok"].strip().lower() in ("y", "yes", "1", "ok") for r in rows)
@@ -75,7 +89,7 @@ def apply(reviewer: str, role: str = "author") -> dict:
         blank = sum(not r["ok"].strip() for r in rows)
         out[key] = {"rows": len(rows), "approved": ok, "rejected": len(bad), "unreviewed": blank,
                     "rejections": [{k: r[k] for k in r if k in ("qid", "level", "text_ur", "correction", "notes")} for r in bad]}
-    out["approved"] = all(out[k]["unreviewed"] == 0 and out[k]["rejected"] == 0 for k in ("questions", "lexicon"))
+    out["approved"] = all(out[k]["unreviewed"] == 0 and out[k]["rejected"] == 0 for _, k in SHEETS if k in out)
     (HERE / "review_status.json").write_text(json.dumps(out, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return out
 
@@ -88,10 +102,11 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     if a.apply:
         s = apply(a.apply, a.role)
-        print(json.dumps({k: s[k] for k in ("approved",)} | {k: {kk: s[k][kk] for kk in ("rows", "approved", "rejected", "unreviewed")} for k in ("questions", "lexicon")}, ensure_ascii=False))
+        print(json.dumps({k: s[k] for k in ("approved",)} | {k: {kk: s[k][kk] for kk in ("rows", "approved", "rejected", "unreviewed")} for _, k in SHEETS if k in s}, ensure_ascii=False))
         return 0
-    nq, nl = build()
-    print(f"wrote review_questions.csv ({nq} questions) and review_lexicon.csv ({nl} entries)")
+    nq, nl, np_ = build()
+    print(f"wrote review_questions.csv ({nq} questions), review_lexicon.csv ({nl} entries) "
+          f"and review_llm_pages.csv ({np_} LLM-written pages)")
     return 0
 
 

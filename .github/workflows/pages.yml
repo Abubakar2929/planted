@@ -1,0 +1,47 @@
+# OWNER: C (written by B after C became unavailable; see PREREG.md §8)
+# Builds the static scorecard + episode viewer (site/build.py) and publishes it to GitHub Pages.
+# Needs no keys and no logs: numbers come from the committed results/, episodes from site/episodes.json.
+# One-time setup by the repo owner: Settings -> Pages -> Source: "GitHub Actions".
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["site/**", "results/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install (only what the site build imports)
+        run: pip install pandas "pydantic>=2"
+      - name: Build
+        run: python site/build.py --out site/dist
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

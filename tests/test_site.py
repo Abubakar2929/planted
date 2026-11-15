@@ -18,7 +18,7 @@ spec.loader.exec_module(site_build)
 
 
 def test_pending_without_results(tmp_path):
-    info = site_build.build(tmp_path / "results", tmp_path / "logs", tmp_path / "dist")
+    info = site_build.build(tmp_path / "results", tmp_path / "logs", tmp_path / "dist", tmp_path / "episodes.json")
     assert info == {"headline": None, "episodes": 0}
     page = (tmp_path / "dist" / "index.html").read_text(encoding="utf-8")
     assert "Results pending" in page and "زیرِ التوا" in page
@@ -40,8 +40,11 @@ def test_viewer_rebuilds_episode_pools(tmp_path):
                              latency_ms=1, cost_usd=0.0, ts="2026-11-14T00:00:00Z").model_dump_json())
     (logs / "run.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (logs / "guard_merges.jsonl").write_text("", encoding="utf-8")
-    info = site_build.build(tmp_path / "results", logs, tmp_path / "dist")
-    assert info["episodes"] == 3
+    exported = tmp_path / "episodes.json"
+    info = site_build.build(tmp_path / "results", logs, tmp_path / "dist", exported)
+    assert info["episodes"] == 3 and exported.exists()
+    # CI: no logs, so the exported episodes are reused
+    assert site_build.build(tmp_path / "results", tmp_path / "no_logs", tmp_path / "dist2", exported)["episodes"] == 3
     eps = site_build.episodes(logs, {"main": ROOT / "data" / "pages" / "main"}, [q.qid])
     assert all(len(e["results"]) == 10 for e in eps)
     assert [sum(r["planted"] for r in e["results"]) for e in eps] == [0, 3, 3]

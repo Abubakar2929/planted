@@ -211,13 +211,23 @@ sel.onchange=show;rv.onchange=show;show();
 </script></body></html>'''
 
 
-def build(results: Path, logs: Path, out: Path) -> dict:
+EPISODES = ROOT / "site" / "episodes.json"  # committed: GitHub Pages builds without logs/ (gitignored)
+
+
+def build(results: Path, logs: Path, out: Path, episodes_file: Path = EPISODES) -> dict:
+    """Write index.html + viewer.html. With logs, the demo episodes are re-exported to `episodes_file`;
+    without logs (CI), the previously exported file is used."""
     out.mkdir(parents=True, exist_ok=True)
     h = headline(results)
     (out / "index.html").write_text(scorecard(h), encoding="utf-8")
     eps = episodes(logs, {"main": ROOT / "data" / "pages" / "main", "heldout": ROOT / "data" / "heldout" / "pages"},
                    DEMO_QIDS) if logs.exists() else []
+    if eps:
+        episodes_file.write_text(json.dumps(eps, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    elif episodes_file.exists():
+        eps = json.loads(episodes_file.read_text(encoding="utf-8"))
     (out / "viewer.html").write_text(viewer(eps), encoding="utf-8")
+    (out / ".nojekyll").write_text("", encoding="utf-8")  # serve files as-is on GitHub Pages
     return {"headline": h, "episodes": len(eps)}
 
 
@@ -226,8 +236,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--results", type=Path, default=ROOT / "results")
     ap.add_argument("--logs", type=Path, default=ROOT / "logs")
     ap.add_argument("--out", type=Path, default=ROOT / "site" / "dist")
+    ap.add_argument("--episodes", type=Path, default=EPISODES, help="exported demo episodes (read when no logs)")
     a = ap.parse_args(argv)
-    print(json.dumps(build(a.results, a.logs, a.out), indent=1, default=str))
+    print(json.dumps(build(a.results, a.logs, a.out, a.episodes), indent=1, default=str))
     return 0
 
 

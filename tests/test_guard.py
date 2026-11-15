@@ -177,6 +177,32 @@ def test_contested_gate_within_margin():
     assert not any(w.startswith("CONTESTED") for w in out0.warnings)
 
 
+def test_origin_tie_broken_by_rank_not_pages_and_contested():
+    # one origin of 3 copies vs one independent honest page: equal origins (1 vs 1)
+    honest_first = [page(0, HONEST[0], DOMAINS[4])] + \
+        [page(i + 1, COPY, DOMAINS[i]) for i in range(3)]
+    out = guard(Q, honest_first, "en", overrides={"gate_margin": 0})
+    assert out.origins == {"1893": {"pages": 1, "origins": 1}, "1915": {"pages": 3, "origins": 1}}
+    assert out.top_answer_norm == "1893"            # best rank wins; 3 pages do not
+    assert any(w.startswith("CONTESTED") for w in out.warnings)
+    assert out.hedge_floor in ("may", "preliminary", "disagree")
+    copies_first = [page(i, COPY, DOMAINS[i]) for i in range(3)] + [page(3, HONEST[0], DOMAINS[4])]
+    out2 = guard(Q, copies_first, "en", overrides={"gate_margin": 0})
+    assert out2.top_answer_norm == "1915"           # rank decides, and it is always flagged + hedged
+    assert any(w.startswith("CONTESTED") for w in out2.warnings) and out2.hedge_floor == "may"
+
+
+def test_variant_p_paraphrase_edges_off_by_default():
+    # fake embedder: cosine 1.0 for every pair, no provenance signals between these pages
+    results = [page(i, HONEST[i], DOMAINS[i]) for i in range(3)]
+    assert config.TAU_PARA is None
+    off = guard(Q, results, "en")
+    assert not any("paraphrase" in e["signals"] for e in off.edges)
+    on = guard(Q, results, "en", overrides={"tau_para": 0.95})
+    assert {(e["i"], e["j"]) for e in on.edges if "paraphrase" in e["signals"]} == {(0, 1), (0, 2), (1, 2)}
+    assert on.origins["1893"]["origins"] == 1
+
+
 def test_hedge_floor_rises_to_preliminary():
     results = [page(0, "Preliminary results suggest the Velbrook Water Authority was founded in 1893.",
                     DOMAINS[0]),

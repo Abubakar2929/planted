@@ -244,11 +244,14 @@ class PairFeatures:
     strong: dict[tuple[int, int], list[str]]         # provenance signals that are edges by themselves
     cosine: dict[tuple[int, int], float]             # embedding cosine for weak-signal pairs only
     warnings: list[str] = field(default_factory=list)
+    cosine_all: dict[tuple[int, int], float] = field(default_factory=dict)  # every pair (variant P only)
 
 
 def pair_features(results: list[dict], answers: list[str | None], lang: str = "en", *,
                   use_provenance: bool = True, use_embeddings: bool = True,
-                  num_perm: int = 128, seed: int = 1) -> PairFeatures:
+                  num_perm: int = 128, seed: int = 1, para: bool = False) -> PairFeatures:
+    """``para=True`` also embeds every page and keeps the cosine of every pair, for the experimental
+    paraphrase edges (variant P: embedding edges without the provenance requirement)."""
     n = len(results)
     pool_answers = [a for a in answers if a]
     texts = [(r.get("content") or r.get("snippet") or "") for r in results]
@@ -293,11 +296,19 @@ def pair_features(results: list[dict], answers: list[str | None], lang: str = "e
             else:
                 v = dict(zip(idx, vecs))
                 cosine = {(i, j): _cos(v[i], v[j]) for i, j in weak_pairs}
-    return PairFeatures(n=n, jaccard=jac, strong=strong, cosine=cosine, warnings=warnings)
+    cosine_all: dict[tuple[int, int], float] = {}
+    if para and use_provenance and use_embeddings and not warnings:
+        vecs = embed_texts(masked)
+        if vecs is None:
+            warnings.append(f"EMBEDDINGS_UNAVAILABLE: embedding edges skipped ({embed_error()})")
+        else:
+            cosine_all = {(i, j): _cos(vecs[i], vecs[j]) for i, j in pairs}
+    return PairFeatures(n=n, jaccard=jac, strong=strong, cosine=cosine, warnings=warnings,
+                        cosine_all=cosine_all)
 
 
 def graph_from(f: PairFeatures, *, tau_content: float, tau_embed: float,
-               use_provenance: bool = True) -> Graph:
+               use_provenance: bool = True, tau_para: float | None = None) -> Graph:
     """Edges at the given thresholds -> connected components (union-find)."""
     signals: dict[tuple[int, int], dict] = {}
 
@@ -316,6 +327,10 @@ def graph_from(f: PairFeatures, *, tau_content: float, tau_embed: float,
         for key, c in f.cosine.items():
             if c >= tau_embed:
                 add(key, "embedding", cosine=round(c, 3))
+        if tau_para is not None:
+            for key, c in f.cosine_all.items():
+                if c >= tau_para:
+                    add(key, "paraphrase", cosine=round(c, 3))
     uf = _UF(f.n)
     for i, j in signals:
         uf.union(i, j)

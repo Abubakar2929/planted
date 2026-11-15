@@ -30,7 +30,8 @@ class Tally:
 
 def tally(answers_norm: list[str | None], answers_raw: list[str | None],
           cluster_ids: list[int]) -> list[Tally]:
-    """Per answer: pages, independent origins. Sorted: most origins, then most pages, then rank."""
+    """Per answer: pages, independent origins. Sorted: most origins, then best (earliest) rank.
+    Page count never breaks a tie: that would count copies again (team decision, Guard prompt 3)."""
     by: dict[str, Tally] = {}
     for i, (a, raw, c) in enumerate(zip(answers_norm, answers_raw, cluster_ids)):
         if a is None:
@@ -39,7 +40,7 @@ def tally(answers_norm: list[str | None], answers_raw: list[str | None],
         t.pages.append(i)
         if c not in t.origins:
             t.origins.append(c)
-    return sorted(by.values(), key=lambda t: (-t.n_origins, -t.n_pages, t.first_rank))
+    return sorted(by.values(), key=lambda t: (-t.n_origins, t.first_rank))
 
 
 def origin_vote(answers: list[str | None], cluster_ids: list[int]) -> dict[str, int]:
@@ -53,5 +54,9 @@ def data_void(origin_counts: dict[str, int], min_origins: int = 2) -> bool:
 
 
 def contested(tallies: list[Tally], margin: int = 0) -> bool:
-    """True when the top two answers' origin counts differ by <= margin."""
-    return len(tallies) >= 2 and tallies[0].n_origins - tallies[1].n_origins <= margin
+    """True when the top two answers' origin counts differ by <= margin; always True on a tie."""
+    return len(tallies) >= 2 and tallies[0].n_origins - tallies[1].n_origins <= max(margin, 0)
+
+
+def tied(tallies: list[Tally]) -> bool:
+    return len(tallies) >= 2 and tallies[0].n_origins == tallies[1].n_origins

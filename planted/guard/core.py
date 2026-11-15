@@ -16,7 +16,7 @@ from contracts.schemas import GuardResult
 from planted.guard import config
 from planted.guard.cluster import PairFeatures, graph_from, pair_features
 from planted.guard.hedge import hedge_floor as _floor
-from planted.guard.vote import Tally, contested, tally
+from planted.guard.vote import Tally, contested, tally, tied
 
 DATA_VOID_WARNING = "DATA_VOID: fewer than 2 independent origins support any answer"
 GATE_FLOOR = "may"
@@ -53,7 +53,7 @@ class GuardOutput(GuardResult):
 def params(overrides: dict | None = None) -> dict:
     p = {"tau_content": config.TAU_CONTENT, "tau_embed": config.TAU_EMBED,
          "gate_margin": config.GATE_MARGIN, "min_origins": config.MIN_ORIGINS,
-         "num_perm": config.NUM_PERM, "seed": config.MINHASH_SEED}
+         "num_perm": config.NUM_PERM, "seed": config.MINHASH_SEED, "tau_para": config.TAU_PARA}
     p.update(overrides or {})
     return p
 
@@ -97,7 +97,8 @@ def guard(query: str, results: list[dict], lang: str = "en", use_provenance: boo
 
     ext = extract_answers(query, results, lang, method=extract_method)
     feats = pair_features(results, [e["answer"] for e in ext], lang, use_provenance=use_provenance,
-                          use_embeddings=use_embeddings, num_perm=p["num_perm"], seed=p["seed"])
+                          use_embeddings=use_embeddings, num_perm=p["num_perm"], seed=p["seed"],
+                          para=p["tau_para"] is not None)
     return assemble(results, lang, ext, feats, p, use_provenance)
 
 
@@ -108,7 +109,7 @@ def assemble(results: list[dict], lang: str, ext: list[dict], feats: PairFeature
     raw = [e["answer"] for e in ext]
     norm = [e["answer_norm"] for e in ext]
     g = graph_from(feats, tau_content=p["tau_content"], tau_embed=p["tau_embed"],
-                   use_provenance=use_provenance)
+                   use_provenance=use_provenance, tau_para=p.get("tau_para"))
     cids = g.cluster_ids
     tallies = tally(norm, raw, cids)
     by_answer = {t.answer: t for t in tallies}
@@ -149,7 +150,10 @@ def assemble(results: list[dict], lang: str, ext: list[dict], feats: PairFeature
     if top is None or top.n_origins < p["min_origins"]:
         warnings.append(DATA_VOID_WARNING)
         gate = True
-    if contested(tallies, p["gate_margin"]):
+    if tied(tallies):  # rank breaks the tie; always flagged and hedged
+        warnings.append("CONTESTED: the top two answers have the same number of independent origins")
+        gate = True
+    elif contested(tallies, p["gate_margin"]):
         warnings.append(f"CONTESTED: the top two answers are within {p['gate_margin']} independent "
                         f"origin(s) of each other")
         gate = True

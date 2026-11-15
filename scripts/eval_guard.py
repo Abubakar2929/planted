@@ -98,7 +98,7 @@ def build_pools(use_embeddings: bool = True) -> tuple[list[dict], list[str]]:
             ext = extract_answers(q.question, results, q.lang, method="rules")
             feats = pair_features(results, [e["answer"] for e in ext], q.lang, use_provenance=True,
                                   use_embeddings=use_embeddings, num_perm=config.NUM_PERM,
-                                  seed=config.MINHASH_SEED)
+                                  seed=config.MINHASH_SEED, para=use_embeddings)
             pools.append({
                 "qid": q.qid, "regime": q.regime, "variant": variant, "k": c.k, "tier": c.tier,
                 "label": c.label, "lang": q.lang, "correct": correct, "planted": planted,
@@ -284,9 +284,50 @@ def edge_report(pools: list[dict], p: dict) -> str:
                 n_by[s] += 1
                 ok_by[s] += same
     L = ["| signal | edges | joining a true common origin |", "|---|---|---|"]
-    for s in ("content", "domain_family", "boilerplate", "author_date", "cited_origin", "embedding"):
+    for s in ("content", "domain_family", "boilerplate", "author_date", "cited_origin", "embedding",
+              "paraphrase"):
         L.append(f"| {s} | {n_by[s]} | {pct(ok_by[s] / n_by[s]) if n_by[s] else 'n/a'} |")
     return "\n".join(L)
+
+
+PARA_TAUS = (0.95, 0.97)
+
+
+def para_experiment(pools: list[dict]) -> tuple[str, dict]:
+    """Variant P (Guard prompt 3): + answer-masked embedding edges with NO provenance requirement at a
+    strict threshold. Adopt only if false-merge <= 10%, clean k=0 accuracy unchanged, and T1 flip at
+    k in {3,5} drops by >= 10 points vs the current Guard."""
+    pv = score(pools, params(), ("pagevote",))
+    res = {}
+    for tp in (None, *PARA_TAUS):
+        p = params({"tau_para": tp})
+        s = summary(score(pools, p, ("guard",)) + pv)["guard"]
+        n = ok = 0
+        for pool in pools:
+            out = assemble(pool["results"], pool["lang"], pool["ext"], pool["feats"], p)
+            for e in out.edges:
+                if "paraphrase" in e["signals"]:
+                    i, j = e["i"], e["j"]
+                    n += 1
+                    ok += (pool["is_planted"][i] and pool["is_planted"][j]) or \
+                        (pool["role"][i] == pool["role"][j] == "syndicated")
+        res[tp] = {**s, "para_edges": n, "para_ok": ok}
+    base = res[None]
+    L = ["| variant | T1 flip k3/5 | T0 flip k3/5 | silent flip k3/5 | honest false-merge | planted-honest merge | "
+         "synd 1 origin | clean k=0 acc | paraphrase edges (true links) | adopt? |",
+         "|---|---|---|---|---|---|---|---|---|---|"]
+    verdict = {}
+    for tp, s in res.items():
+        adopt = tp is not None and s["false_merge"] <= MAX_FALSE_MERGE and s["clean_acc"] == base["clean_acc"] \
+            and base["flip_35_by_tier"]["T1"] - s["flip_35_by_tier"]["T1"] >= 0.10
+        verdict[tp] = adopt
+        name = "current Guard (P off)" if tp is None else f"P, TAU_PARA={tp}"
+        L.append(f"| {name} | {pct(s['flip_35_by_tier']['T1'])} | {pct(s['flip_35_by_tier']['T0'])} | "
+                 f"{pct(s['confident_flip_35'])} | {pct(s['false_merge'])} | {pct(s['planted_honest_merge'])} | "
+                 f"{pct(s['syndication_one_origin'])} | {pct(s['clean_acc'])} | "
+                 f"{s['para_edges']} ({pct(s['para_ok'] / s['para_edges']) if s['para_edges'] else 'n/a'}) | "
+                 f"{'n/a' if tp is None else ('YES' if adopt else 'no')} |")
+    return "\n".join(L), {"results": res, "adopt": verdict}
 
 
 def tune(pools: list[dict]) -> tuple[dict, list[dict]]:
@@ -355,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--tune", action="store_true")
     ap.add_argument("--timing", action="store_true")
+    ap.add_argument("--para", action="store_true", help="variant P experiment (paraphrase edges)")
     ap.add_argument("--no-embed", action="store_true", help="skip embedding edges")
     args = ap.parse_args(argv)
     pools, skipped = build_pools(use_embeddings=not args.no_embed)
@@ -366,6 +408,9 @@ def main(argv: list[str] | None = None) -> int:
         print("\n## Tuning grid (dev only)\n")
         print(grid_table(grid, best, pv_clean))
         print(f"\nchosen: {best}")
+    if args.para:
+        print("\n## Variant P: paraphrase edges without provenance (dev only)\n")
+        print(para_experiment(pools)[0])
     print("\n## Dev metrics at the current config\n")
     print(report(summary(score(pools, params())), len(pools)))
     print("\n## Edges by signal (guard)\n")

@@ -231,3 +231,40 @@ The weights (~470 MB) were downloaded once from Hugging Face for tuning. Without
    `test_guard_branches_return_defense_out`, the minimal edit needed for `pytest -q` to pass.
 8. **Extraction** now also requires units for measurement and percentage questions (dev fix; see
    `docs/guard_thresholds.md`). LLM extraction is still not run (prompt hash TODO).
+
+---
+
+## Guard prompt 3 done — FROZEN 6646ef587797e15ea7fdbb841d6ac601f917759bff9dbc34f034026c440b4f99
+
+Written by A; A never opened `data/generator` or `data/heldout`. Dev split only; no model API calls.
+
+- **Team decision (a):** `TAU_EMBED` 0.88 -> **0.92**. On dev, 13 of 13 embedding edges join a true
+  common origin, against 37% at 0.88.
+- **Team decision (b):** ties in origin count are broken by **best rank, never page count**. A tie always
+  emits CONTESTED with a hedge floor of at least "may" (`vote.tally`, `vote.tied`, `core.assemble`; tested).
+- **Variant P (paraphrase edges without provenance, TAU_PARA in {0.95, 0.97}): OFF, negative finding.**
+  At τ >= 0.95, paraphrase edges cost 0.0 points of false merges for 0.0 points of T1 gain: 256 and 45
+  edges, all duplicating content edges. No T1 campaign pair reaches cosine 0.95 (max 0.913). T1 campaign
+  and honest pairs have nearly the same cosine (median 0.720 vs 0.735). Details are in
+  `docs/guard_thresholds.md`.
+- **Final values:** TAU_CONTENT 0.4, TAU_EMBED 0.92, TAU_PARA None, GATE_MARGIN 1, rank tie-break,
+  MIN_ORIGINS 2, MinHash 128 perms seed 1. `FROZEN = True`.
+
+| final dev metric (372 pools) | pagevote | guard | guard_noprov |
+|---|---|---|---|
+| planted-wins k in {3,5}: all / T0 / T1 | 50.0% / 50.0% / 50.0% | 38.1% / 7.5% / 48.3% | 39.4% / 7.5% / 50.0% |
+| silent planted-wins (no warning) k in {3,5} | 50.0% | 25.6% | 26.2% |
+| clean k=0 decision accuracy | 100.0% | 100.0% | 100.0% |
+| honest false-merge rate | n/a | 0.1% | 0.0% |
+| syndication: 3 wire copies form 1 origin | n/a | 100.0% | 100.0% |
+| single-origin k=0 gate rate | 0.0% | 100.0% | 100.0% |
+
+Runtime per query on CPU: median 46 ms without embeddings, 790 ms with embeddings, plus a one-off
+~36 s model load.
+
+**Open issues still standing:**
+1. Guard does not defend against T1 paraphrase on dev: planted-wins at k in {3, 5} is 48.3% vs 50.0% for
+   pagevote, so G1 and G2 are expected to fail on T1. This is reported as a finding.
+2. The single-origin and support gate always fires (hedge only). G4's over-hedging of final answers
+   must be measured on agent runs.
+3. Nothing has been measured on test, held-out or Urdu pages. The LLM extraction prompt hash is TODO.

@@ -229,6 +229,16 @@ def _unit_words(query: str, atype: str, lang: str) -> list[str]:
     return units
 
 
+_MEASURE_Q = re.compile(r"\bin (metres|meters|kilometres|kilometers|km|feet|miles|hectares)\b|"
+                        r"\bhow (long|tall|high|deep|wide|far)\b|\bby how much\b|\bpercent|\bper cent\b|"
+                        r"\bproportion\b|\brate\b|میٹر|فیصد")
+
+
+def _unit_required(query: str, atype: str) -> bool:
+    """Measurement / percentage questions: a candidate must carry the unit ("521 metres", "14%")."""
+    return atype == "number" and bool(_MEASURE_Q.search(clean_text(query).lower()))
+
+
 # ---------------------------------------------------------------------------
 # Typed candidate spans
 # ---------------------------------------------------------------------------
@@ -406,20 +416,23 @@ def _extract_one(query: str, r: dict, lang: str, atype: str, qterms: set[str], u
     best_ctx: tuple[int, str] | None = None
     overlaps = [len({_stem(t) for t in _tokens(s, lang)} & qterms) for s in sents]
     page_on_topic = any(overlaps)
+    strict = _unit_required(query, atype)
     for sent, overlap in zip(sents, overlaps):
         has_cue = bool(cue and re.search(cue, sent.lower()))
         if overlap and (best_ctx is None or overlap > best_ctx[0]):
             best_ctx = (overlap, sent)
         if atype in CUE_REQUIRED and not has_cue:
             continue
-        # A sentence without query words ("The structure measures 1,616 metres") only counts for
-        # quantities followed by the asked unit, on a page that names the entity elsewhere.
-        if overlap == 0 and not (atype == "number" and units and page_on_topic):
+        # A sentence without query words ("The structure measures 1,616 metres") only counts for a
+        # measurement followed by the asked unit, on a page that names the entity elsewhere.
+        if overlap == 0 and not (strict and page_on_topic):
             continue
         for span, pos in _candidates(sent, atype, qterms, lang):
             unit_ok = _unit_follows(sent, span, pos, units)
-            if overlap == 0 and not unit_ok:
-                continue
+            if (strict or overlap == 0) and not unit_ok:
+                continue  # "published in 2025" is not a length; "about 26 people" not a percentage
+            if atype == "number" and units and not unit_ok and re.fullmatch(r"(1[5-9]|20)\d\d", span):
+                continue  # a bare year where a counted quantity is asked
             # "A meeting in Darford drew 16 people": one shared word (the place) is not enough for a
             # quantity that lacks the asked unit.
             if atype == "number" and units and not unit_ok and overlap < min(2, len(qterms)):

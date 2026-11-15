@@ -7,8 +7,8 @@
     pagevote      RobustRAG-style page-count majority over per-page extracted answers: pages that
                   support the majority answer move first (stable otherwise); "Most pages (n of N) say: X."
                   plus warning NO_MAJORITY when the top two answers tie (or no page states an answer)
-    guard         Planted Guard (not implemented yet)
-    guard_noprov  Guard without provenance edges (not implemented yet)
+    guard         Planted Guard (planted.guard.guard): count independent origins, gate, hedge floor
+    guard_noprov  Guard ablation without provenance (and embedding) edges: content MinHash only
 
 Every defense except "none" returns copies of the result dicts with two added keys,
 ``extracted_answer`` and ``hedge_level``; inputs are never mutated. Extraction is shared with Guard
@@ -19,6 +19,7 @@ Only the visible result keys are read; hidden Page fields are never added or rea
 
 from __future__ import annotations
 
+import importlib
 import os
 from collections import Counter
 
@@ -98,8 +99,11 @@ def apply_defense(name: str, query: str, results: list[dict], lang: str) -> Defe
         return prompt_defense(query, results, lang)
     if name == "pagevote":
         return pagevote_defense(query, results, lang)
-    if name in ("guard", "guard_noprov"):
-        raise NotImplementedError("Guard not implemented yet")
+    if name == "guard":
+        # Looked up at call time on the package, so planted.guard.guard can be swapped (tests, serve).
+        return importlib.import_module("planted.guard").guard(query, results, lang)
+    if name == "guard_noprov":
+        return importlib.import_module("planted.guard").guard_noprov(query, results, lang)
     raise ValueError(f"unknown defense {name!r}; expected one of {DEFENSES}")
 
 

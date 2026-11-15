@@ -121,3 +121,113 @@ has not been measured (TODO, see below).
    adds both keys.
 7. **Environment.** The system Python lacks `litellm`, so `pytest -q` must run in `.venv`, where 232 tests
    passed and 2 were skipped.
+
+---
+
+## Guard prompt 2 done (2026-11-15): Guard pipeline, tuned and frozen on dev20
+
+**Firewall statement.** Written by A; A never opened `data/generator` or `data/heldout`. Tuning and
+inspection used the dev split only. Hidden page fields (and the bank index `role`) are read only in
+`scripts/eval_guard.py`, `scripts/eval_extraction.py` and tests.
+
+### API
+
+```python
+from planted import guard                       # = planted.guard.guard
+out = guard(query, results, lang="en")          # GuardOutput (a contracts GuardResult / DefenseOut)
+out.results        # all input results, reordered; each + extracted_answer, hedge_level, cluster_id, guard_score, note
+out.system_note    # "Independent-source check: '<A>' is supported by p pages from o independent origin(s); ..."
+out.warnings       # "DATA_VOID: fewer than 2 independent origins support any answer", "CONTESTED: ...",
+                   # "EMBEDDINGS_UNAVAILABLE: ..." (model could not load; embedding edges skipped)
+out.hedge_floor    # None | "may" | "preliminary" | "disagree"
+out.origins        # answer -> {"pages": int, "origins": int}
+out.top_answer, out.top_answer_norm, out.edges (i, j, signals), out.config_hash
+from planted.guard import guard_noprov, enforce # ablation (content MinHash only); hedge floor
+apply_defense("guard" | "guard_noprov", query, results, lang)   # Contract 3
+```
+
+Modules:
+- `normalize.py`: `normalise_text` and `shingles` (word 5-grams for EN, character 5-grams for UR).
+- `cluster.py`: content, provenance and embedding edges, combined with union-find; every edge records
+  the signals that created it.
+- `vote.py`: pages and independent origins per answer, `n_eff` = number of origins.
+- `core.py`: reweights (never deletes), then applies the gate and the hedge floor.
+- `hedge.py`: `enforce`, with fixed EN/UR prefixes; idempotent.
+- `config.py`: the frozen values.
+
+Environment variables: `PLANTED_EXTRACT=rules|llm` selects extraction; `PLANTED_GUARD_EMBED=0` turns off
+embedding edges.
+
+### Frozen thresholds
+
+`TAU_CONTENT = 0.4`, `TAU_EMBED = 0.88`, `GATE_MARGIN = 1`, `MIN_ORIGINS = 2`, MinHash 128 perms seed 1,
+embedder `paraphrase-multilingual-MiniLM-L12-v2`.
+`CONFIG_HASH = 88a3e9a22f9b40ea26a08aad260775386ef539babb39ad0fe190a8796f1fc94f`.
+The full grid, the selection rule and the rule changes made during tuning are in `docs/guard_thresholds.md`.
+
+### Dev metrics (372 dev pools, main bank; `python scripts/eval_guard.py`)
+
+| k | pagevote acc | guard acc | guard_noprov acc | pagevote flip | guard flip | guard_noprov flip |
+|---|---|---|---|---|---|---|
+| 0 | 100.0% | 100.0% | 100.0% | 0.0% | 0.0% | 0.0% |
+| 1 | 68.8% | 88.8% | 88.8% | 31.2% | 11.2% | 11.2% |
+| 3 | 65.0% | 71.2% | 70.0% | 35.0% | 28.7% | 30.0% |
+| 5 | 35.0% | 50.0% | 47.5% | 65.0% | 50.0% | 52.5% |
+| 8 | 0.0% | 21.2% | 21.2% | 100.0% | 78.8% | 78.8% |
+
+| metric | pagevote | guard | guard_noprov |
+|---|---|---|---|
+| flip k in {3,5}: all / T0 / T1 | 50.0% / 50.0% / 50.0% | 39.4% / 15.0% / 47.5% | 41.2% / 15.0% / 50.0% |
+| confident (ungated) flip k in {3,5} | 50.0% | 25.0% | 26.2% |
+| k50 T0 / T1 wire / T1 propaganda / T1 blog | 4.0 / 4.2 / 3.8 / 4.2 | > 8 / 4.2 / 3.8 / 5.0 | > 8 / 4.2 / 3.8 / 4.2 |
+| clean k=0 decision accuracy (constraint: guard >= pagevote - 2 pts) | 100.0% | 100.0% | 100.0% |
+| honest false-merge rate (constraint <= 10%) | n/a | 0.6% | 0.0% |
+| syndication: 3 wire copies = 1 origin; syndication accuracy | n/a; 100.0% | 100.0%; 100.0% | 100.0%; 100.0% |
+| single_origin k=0: gate rate (over-hedge cost); accuracy | 0.0%; 100.0% | 100.0%; 100.0% | 100.0%; 100.0% |
+| gate on clean known/support k=0 (all support-regime pools: one official source) | 0.0% | 18.8% | 18.8% |
+| mean origins of k>=2 planted pages: T0 / T1 wire / T1 propaganda / T1 blog | n/a | 1.00 / 5.28 / 5.33 / 4.53 | 1.00 / 5.33 / 5.33 / 5.33 |
+
+### Runtime per query on CPU (dev k=5 pools, n=40, embedding cache cleared before each call)
+
+| guard() | median | mean | max |
+|---|---|---|---|
+| without embeddings (`PLANTED_GUARD_EMBED=0`) | 101 ms | 113 ms | 190 ms |
+| with embeddings | 1,014 ms | 949 ms | 1,085 ms |
+
+The embedding model takes about 36 s to load once per process (cold start, measured in a fresh process).
+The weights (~470 MB) were downloaded once from Hugging Face for tuning. Without them, Guard runs with an
+`EMBEDDINGS_UNAVAILABLE` warning. Rules extraction makes no model calls.
+
+### Open issues
+
+1. **Guard does not beat paraphrase (T1) on dev.** T1 campaign pages form about 5 origins out of 5
+   (no shared wording, domain family or byline), so at k = 5 the planted answer ties the honest answer
+   on origins. G1 and G2 ask for >= 50% relative reduction and >= 10 points below pagevote on T0 **and**
+   T1, so they will likely fail on T1. T0 is handled (k50 > 8; 15% flip at k in {3, 5}, all from the
+   support regime; see 3). This matches the plan's warning that content similarity alone fails at T1.
+   It is a finding to report, not something to tune away on test.
+2. **TAU_EMBED = 0.88 is fragile.** It was chosen by 0.6 points (one pool), and only 37% of its
+   embedding edges join a true common origin. **Human decision before `prereg-v2`:** keep the rule's pick,
+   or switch to 0.92 (13 edges, all joining true common origins). See `docs/guard_thresholds.md`.
+3. **The top-answer tie-break by pages reintroduces page counting.** As specified, an origin tie is
+   broken by page count, so in the support regime one official origin vs one T0 origin goes to the
+   campaign (3 or 5 copies). With GATE_MARGIN = 1 these answers are always CONTESTED and hedged, so they
+   are hedged flips, not confident ones. A rank-only tie-break, or abstaining on ties, would remove
+   them; this is a design choice for the team before the tag.
+4. **Gate cost.** The DATA_VOID gate fires on every honest single-origin pool and every support-regime
+   k = 0 pool (one official source). This is by construction (< 2 origins), and the floor only hedges.
+   The PREREG G4 cost (over-hedging of *final answers* <= 40%) must be measured on agent runs.
+5. **Provenance contributes little on dev.** At TAU_CONTENT = 0.4, content MinHash alone groups T0 copies
+   and syndicated wire copies, so `guard_noprov` is close to `guard`. Domain-family edges are 99%
+   precise but rarely decisive here. Boilerplate edges remain 78% precise ("Posted in Uncategorised." is
+   still generic). Author+date and cited-origin signals never fire on dev, so they are untested on real
+   pages.
+6. **Untested on test, held-out and Urdu.** No test or held-out page was opened or scored. There are no
+   Urdu dev pools, so Urdu clustering (char 5-grams) and Urdu extraction are covered by synthetic tests
+   only. T3 (cross-lingual) gets no content edge across languages unless embeddings fire, and those need
+   a weak provenance signal.
+7. **Contract-test change outside the listed paths.** Wiring `guard` into `apply_defense` broke
+   `tests/test_baselines.py::test_guard_not_implemented_yet`. It was replaced by
+   `test_guard_branches_return_defense_out`, the minimal edit needed for `pytest -q` to pass.
+8. **Extraction** now also requires units for measurement and percentage questions (dev fix; see
+   `docs/guard_thresholds.md`). LLM extraction is still not run (prompt hash TODO).

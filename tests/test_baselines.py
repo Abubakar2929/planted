@@ -91,9 +91,12 @@ def test_no_hidden_fields_in_output(name):
 
 
 @pytest.mark.parametrize("name", ["guard", "guard_noprov"])
-def test_guard_not_implemented_yet(name):
-    with pytest.raises(NotImplementedError, match="Guard not implemented yet"):
-        apply_defense(name, Q, pool(["1893"]), "en")
+def test_guard_branches_return_defense_out(name, monkeypatch):
+    from contracts.schemas import DefenseOut
+
+    monkeypatch.setenv("PLANTED_GUARD_EMBED", "0")  # no model load here; tests/test_guard.py covers it
+    out = apply_defense(name, Q, pool(["1893", "1915", "1893"]), "en")
+    assert isinstance(out, DefenseOut) and len(out.results) == 3
 
 
 def test_unknown_defense():

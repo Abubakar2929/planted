@@ -2,7 +2,9 @@
 """SQLite cache for model calls (.cache/llm.sqlite).
 
 Key: sha256 of the canonical JSON of (model, seed, temperature, max_tokens, messages, tools),
-with model aliases resolved first, so "gflite" and its full name share entries.
+with model aliases resolved first, so "gflite" and its full name share entries. An optional
+``key_extra`` dict (e.g. ``{"prompt_style": "neutral"}``) is added to the key when given, so
+runs that differ only in a run setting never share an entry; ``None`` leaves old keys unchanged.
 
 A hit returns the stored call_model dict unchanged, including its original ``cost_usd`` and
 ``latency_ms``, so a rerun logs byte-identical Contract-2 lines. Money actually spent in this
@@ -37,6 +39,7 @@ def cache_key(
     max_tokens: int,
     messages: list[dict],
     tools: list[dict] | None,
+    key_extra: dict | None = None,
 ) -> str:
     payload = {
         "model": resolve_model(model),
@@ -46,6 +49,8 @@ def cache_key(
         "messages": messages,
         "tools": tools,
     }
+    if key_extra is not None:
+        payload["extra"] = key_extra
     return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
 
 
@@ -110,10 +115,11 @@ def call_model_cached(
     temperature: float = 0,
     max_tokens: int = 400,
     cache: Cache | None = None,
+    key_extra: dict | None = None,
 ) -> dict[str, Any]:
     """call_model through the cache. Same arguments -> identical dict, with no API call on a hit."""
     cache = cache or default_cache()
-    key = cache_key(model, seed, temperature, max_tokens, messages, tools)
+    key = cache_key(model, seed, temperature, max_tokens, messages, tools, key_extra)
     hit = cache.get(key)
     if hit is not None:
         cache._count(hit=True)

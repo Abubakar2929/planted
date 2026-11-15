@@ -268,3 +268,26 @@ Runtime per query on CPU: median 46 ms without embeddings, 790 ms with embedding
 2. The single-origin and support gate always fires (hedge only). G4's over-hedging of final answers
    must be measured on agent runs.
 3. Nothing has been measured on test, held-out or Urdu pages. The LLM extraction prompt hash is TODO.
+
+---
+
+## Offline test evaluation done (2026-11-15)
+
+Run by A. `data/generator/` was not opened. Held-out pages were loaded only through `data.pools.PageBank` /
+`MockEngine.from_bank` inside `scripts/eval_guard_test.py`; no held-out page text, title or url was printed or
+written, only aggregate metrics (plus aggregate index metadata: which tier/label campaigns each bank has, and the
+regimes of the 20 held-out T4 questions). Test split only. Rules extraction, no model API calls.
+
+- **Freeze checks (before and after the run):** `CONFIG_HASH = 6646ef587797e15ea7fdbb841d6ac601f917759bff9dbc34f034026c440b4f99`
+  (unchanged); `git diff --stat prereg-v2 -- planted/guard planted/baselines` empty both times.
+- **Pools:** held-out 1,278 built (160 T4 pools rejected: the bank has T4 for 20 test questions); main 2,578 built, 0 rejected.
+- **Outputs:** `results/guard_offline_heldout.csv`, `results/guard_offline_main.csv`, `results/guard_offline_summary.md`
+  (headline tables, decision-level hypothesis table with Holm, extraction check, findings).
+- **Decision-level verdicts (held-out):** G2 FAIL (page-vote conjunct passes on T0 only: −55 pts; T1 −7 pts);
+  G4 FAIL (single-origin gate hedges 100% of pools; bound 40%); G1 and G3 NOT DECIDABLE OFFLINE (G3's false-merge
+  conjunct passes at 1.8%); G6 order holds at decision level, but held-out T4 (20 `known` questions) cannot separate the defenses.
+- **Extraction generalisation (rules, not changed):** held-out EN 82.1% of slots, UR 73.8%; main EN 94.9%, UR 82.3%.
+- **Deviations:** 4 workers instead of CPU count − 1 (RAM next to concurrent sweeps; the first 7-worker attempt
+  failed with OpenBLAS out-of-memory errors). T0 k=5 added as a supplementary decision-level cell, because G1/G2 are
+  stated at T0 k=5 but arm G lists no T0 k=5 condition. k50 uses the dev script's linear interpolation, not PREREG §5's logistic fit.
+- Embedding vectors cached in `.cache/emb/` (gitignored); `logs/` and `.cache/llm.sqlite` untouched.

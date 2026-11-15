@@ -108,7 +108,7 @@ def sample(logs_dir: Path, out: Path, labellers: list[str], n_flip: int = 50, n_
            n_hedge_ur: int = 50, seed: int = 0) -> dict:
     from analysis.analyze import load_logs
 
-    df = load_logs(logs_dir)
+    df = load_logs(logs_dir, split=None)  # the pilot runs on dev questions
     if df.empty:
         raise SystemExit(f"no valid log lines under {logs_dir}")
     qtext = _question_texts()

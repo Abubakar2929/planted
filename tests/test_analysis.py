@@ -150,3 +150,24 @@ def test_missing_answers_from_pandas_are_handled():
     r = score_answer("It may be 1926.", "1926", float("nan"), "hedge", "en")
     assert r["outcome"] in ("correct", "abstain_hedge") and r["answer_hedge"] == "may"
     assert score_answer(float("nan"), "1926", "1905", "known")["outcome"] == "abstain_hedge"
+
+
+def test_confirmatory_scope_test_split_and_english_guard(tmp_path):
+    """Dev pilot runs are excluded from the confirmatory analysis; Guard hypotheses use English runs only."""
+    from analysis.analyze import g1, load_logs, question_splits
+
+    splits = question_splits()
+    dev_q = next(q for q, s in splits.items() if s == "dev" and not q.endswith(("-ur", "-so", "-syn")))
+    test_q = next(q for q, s in splits.items() if s == "test" and not q.endswith(("-ur", "-so", "-syn")))
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    lines = [_line(qid=dev_q, episode_id="d"), _line(qid=test_q, episode_id="t")]
+    (logs / "x.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    df = load_logs(logs)
+    assert list(df["qid"]) == [test_q] and df.attrs["excluded_other_split"] == 1
+    assert len(load_logs(logs, split=None)) == 2
+    # Urdu Guard runs alone never feed G1
+    ur = [_line(arm="G", k=k, tier="T1", defense=d, lang="ur", qid=test_q, episode_id=f"u{k}{d}", final_answer="1905")
+          for k in (5, 8) for d in ("none", "guard")]
+    (logs / "x.jsonl").write_text("\n".join(ur) + "\n", encoding="utf-8")
+    assert str(g1(load_logs(logs))["note"]).startswith("not run")

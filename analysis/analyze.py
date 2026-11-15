@@ -37,7 +37,21 @@ EXPLORATORY = ["H4", "H4b", "H5", "G6"]
 
 
 # ---------------------------------------------------------------------------- loading
-def load_logs(logs_dir: Path) -> pd.DataFrame:
+def question_splits() -> dict[str, str]:
+    """qid -> split ("dev" / "test") for every question file, including -ur / -so / -syn variants."""
+    out = {}
+    for f in sorted((Path(__file__).resolve().parents[1] / "data" / "questions").glob("*.jsonl")):
+        for line in open(f, encoding="utf-8"):
+            if line.strip():
+                q = json.loads(line)
+                out[q["qid"]] = q["split"]
+    return out
+
+
+def load_logs(logs_dir: Path, split: str | None = "test") -> pd.DataFrame:
+    """All valid Contract-2 runs, rescored. Confirmatory analysis uses the test split only (PREREG §2):
+    runs on other splits (the dev pilot) are dropped and counted in df.attrs["excluded_other_split"].
+    split=None keeps every run (used for hand labelling the pilot)."""
     rows, bad = [], 0
     for path in sorted(Path(logs_dir).rglob("*.jsonl")):
         if path.name in ("guard_merges.jsonl", "realweb.jsonl"):
@@ -54,7 +68,14 @@ def load_logs(logs_dir: Path) -> pd.DataFrame:
             d["_file"] = path.name
             rows.append(d)
     df = pd.DataFrame(rows)
+    excluded = 0
+    if split is not None and not df.empty:
+        splits = question_splits()
+        keep = df["qid"].map(lambda q: splits.get(q, split) == split)  # unknown qids (simulations) are kept
+        excluded = int((~keep).sum())
+        df = df[keep].reset_index(drop=True)
     df.attrs["invalid_lines"] = bad
+    df.attrs["excluded_other_split"] = excluded
     if df.empty:
         return df
     scored = df.apply(lambda r: score_answer(r["final_answer"], r["correct_answer"], r["planted_answer"],
@@ -65,6 +86,7 @@ def load_logs(logs_dir: Path) -> pd.DataFrame:
     df["hedged_ans"] = (df["answer_hedge"] != "none").astype(int)
     df["label"] = df["label"].fillna("none")
     df["tier"] = df["tier"].fillna("none")
+    df.attrs.update(invalid_lines=bad, excluded_other_split=excluded)  # rename/join may drop attrs
     return df
 
 
@@ -150,7 +172,7 @@ def _reduction(g, tier, k, model, defence="guard"):
 
 
 def g1(df):
-    g = sel(df, arm="G", regime="known")
+    g = sel(df, arm="G", regime="known", lang="en")
     cells = []
     for model in sorted(g["model"].unique()):
         for tier in ("T0", "T1"):
@@ -168,7 +190,7 @@ def g1(df):
 
 
 def g2(df):
-    g = sel(df, arm="G", k=5, regime="known")
+    g = sel(df, arm="G", k=5, regime="known", lang="en")
     cells = []
     for model in sorted(g["model"].unique()):
         for tier in ("T0", "T1"):
@@ -198,7 +220,7 @@ def _merges(logs_dir: Path):
 
 
 def g3(df, logs_dir):
-    g = sel(df, arm="G", k=0)
+    g = sel(df, arm="G", k=0, lang="en")
     clean = sel(g, regime="known", defense=["none", "guard"])
     synd = sel(g, regime="syndication", defense=["none", "guard"])
     if clean["defense"].nunique() < 2:
@@ -218,7 +240,7 @@ def g3(df, logs_dir):
 
 
 def g4(df):
-    g = sel(df, arm="G")
+    g = sel(df, arm="G", lang="en")
     void = sel(g, regime=["void"], k=3, defense=["none", "guard"])
     known0 = sel(g, regime="known", k=0, defense="guard")
     so0 = sel(g, regime="single_origin", k=0, defense="guard")
@@ -282,7 +304,7 @@ def h5(df):
 def g6(df):
     out = {}
     for tier in ("T0", "T1", "T3", "T4"):
-        g = sel(df, arm=["G", "T4"], tier=tier, defense=["none", "guard"], regime="known")
+        g = sel(df, arm=["G", "T4"], tier=tier, defense=["none", "guard"], regime="known", lang="en")
         cells = [r for model in g["model"].unique() for k in (3, 8) if (r := _reduction(g, tier, k, model)) is not None]
         if cells:
             out[tier] = float(np.nanmean([c[0] for c in cells]))
@@ -377,6 +399,7 @@ def analyze(logs_dir: Path, out_dir: Path) -> dict:
     agree = float((df["outcome"] == df["outcome_logged"]).mean())
     summary = {
         "runs": int(len(df)), "invalid_lines": int(df.attrs.get("invalid_lines", 0)),
+        "excluded_other_split": int(df.attrs.get("excluded_other_split", 0)),
         "by_arm": df["arm"].value_counts().to_dict(), "models": sorted(df["model"].unique().tolist()),
         "scorer_agreement_with_logged_outcome": round(agree, 4),
         "cost_usd_logged": round(float(df["cost_usd"].sum()), 4),

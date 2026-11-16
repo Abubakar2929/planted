@@ -70,7 +70,9 @@ def hero_figure(df: pd.DataFrame, out: Path, made: list | None = None) -> None:
     g = df[(df["arm"] == "G") & (df["regime"] == "known") & ((df["tier"] == "T1") | (df["k"] == 0))]
     if g.empty or g["k"].nunique() < 2:
         return
-    models = sorted(g["model"].unique())
+    models = sorted(m for m in g["model"].unique() if g.loc[g["model"] == m, "k"].nunique() >= 2)  # a curve needs 2 doses
+    if not models:
+        return
     fig, axes = plt.subplots(1, len(models), figsize=(3.4 * len(models), 2.5), squeeze=False, sharey=True)
     for ax, m in zip(axes[0], models):
         for d in ("none", "pagevote", "guard_noprov", "guard"):
@@ -79,7 +81,7 @@ def hero_figure(df: pd.DataFrame, out: Path, made: list | None = None) -> None:
         ax.set_xlabel("planted pages out of 10 (k)")
         ax.set_title(m, color=INK)
     axes[0][0].legend(frameon=False, loc="upper left")
-    fig.suptitle("Counting origins, not pages, moves the curve (held-out T1 attack pages; bands: Wilson 95% CI)",
+    fig.suptitle("Flip rate by defence, known facts, held-out T1 attack pages (bands: Wilson 95% CI)",
                  fontsize=7.5, x=0.01, ha="left", color=INK)
     _save(fig, out, "fig1_hero.png", made)
 

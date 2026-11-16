@@ -171,3 +171,11 @@ def test_confirmatory_scope_test_split_and_english_guard(tmp_path):
           for k in (5, 8) for d in ("none", "guard")]
     (logs / "x.jsonl").write_text("\n".join(ur) + "\n", encoding="utf-8")
     assert str(g1(load_logs(logs))["note"]).startswith("not run")
+
+
+def test_numpy_false_is_reported_as_fail():
+    """Regression: a numpy False must print FAIL in Table 1, not 'incomplete'."""
+    from analysis.analyze import row
+
+    assert row("G4", "confirmatory", "x", passed=np.float64(0.07) >= 0.20)["passed"] is False
+    assert row("G3", "confirmatory", "x", passed=None)["passed"] is None

@@ -100,7 +100,7 @@ def sel(df: pd.DataFrame, **kw) -> pd.DataFrame:
 def row(hid, kind, desc, estimate=None, ci=None, p=None, passed=None, note=""):
     return {"id": hid, "family": kind, "hypothesis": desc, "estimate": estimate,
             "ci_lo": None if ci is None else ci[0], "ci_hi": None if ci is None else ci[1],
-            "p": p, "passed": passed, "note": note}
+            "p": p, "passed": None if passed is None else bool(passed), "note": note}  # numpy bool -> bool
 
 
 def not_run(hid, kind, desc, why):

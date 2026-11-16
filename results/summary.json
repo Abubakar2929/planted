@@ -1,0 +1,145 @@
+{
+  "runs": 1903,
+  "invalid_lines": 0,
+  "excluded_other_split": 0,
+  "by_arm": {
+    "A": 999,
+    "G": 815,
+    "E": 89
+  },
+  "models": [
+    "gflite31",
+    "gptoss"
+  ],
+  "scorer_agreement_with_logged_outcome": 1.0,
+  "cost_usd_logged": 0.9549,
+  "hypotheses": {
+    "H1": {
+      "estimate": 7.394538230317621,
+      "ci": [
+        5.438881642141266,
+        7.662554216141877
+      ],
+      "p": 3.219941539669218e-14,
+      "p_holm": 2.2539590777684527e-13,
+      "passed": false,
+      "note": "k50 (known regime, labels pooled) best model=gptoss; slopes={\"gflite31\": 0.7971578402690336, \"gptoss\": 9.052879299006605}"
+    },
+    "H2": {
+      "estimate": 0.8908455953815788,
+      "ci": [
+        0.8283903150340386,
+        0.9648773448567637
+      ],
+      "p": 1.0,
+      "p_holm": 1.0,
+      "passed": false,
+      "note": "ratios={'gflite31': [0.891, 0.828, 0.965], 'gptoss': [1.382, 0.994, 1.447]}; interaction b=6.784; TOST k=8 diff=0.282 ci90=(0.149, 0.416)"
+    },
+    "H3": {
+      "estimate": 0.0,
+      "ci": [
+        0.0,
+        0.22802209777022706
+      ],
+      "p": 0.0004997501249375312,
+      "p_holm": 0.0029985007496251873,
+      "passed": true,
+      "note": ""
+    },
+    "G1": {
+      "estimate": -1.0,
+      "ci": [
+        NaN,
+        0.0
+      ],
+      "p": 1.0,
+      "p_holm": 1.0,
+      "passed": false,
+      "note": "worst cell ('gflite31', 'T1', 5); cells=1"
+    },
+    "G2": {
+      "estimate": -0.2222222222222222,
+      "ci": [
+        -0.37037037037037035,
+        -0.07407407407407407
+      ],
+      "p": 1.0,
+      "p_holm": 1.0,
+      "passed": false,
+      "note": "worst cell ('gflite31', 'T1', 'prompt')"
+    },
+    "G3": {
+      "estimate": -0.0,
+      "ci": [
+        -0.0,
+        -0.0
+      ],
+      "p": 0.0004997501249375312,
+      "p_holm": 0.0029985007496251873,
+      "passed": null,
+      "note": "clean drop=-0.000 (TOST +/-3: True); syndication drop=n/a; false-merge=not run (no guard_merges.jsonl)"
+    },
+    "G4": {
+      "estimate": 0.07142857142857142,
+      "ci": [
+        0.0,
+        0.21428571428571427
+      ],
+      "p": 0.3435,
+      "p_holm": 1.0,
+      "passed": false,
+      "note": "over-hedge known k=0=0.037; single-origin k=0=1.000"
+    },
+    "H4": {
+      "estimate": NaN,
+      "ci": [
+        NaN,
+        NaN
+      ],
+      "p": NaN,
+      "p_holm": NaN,
+      "passed": NaN,
+      "note": "not run: no arm D logs"
+    },
+    "H4b": {
+      "estimate": NaN,
+      "ci": [
+        NaN,
+        NaN
+      ],
+      "p": NaN,
+      "p_holm": NaN,
+      "passed": NaN,
+      "note": "not run: no n_agree 1 vs 3 logs"
+    },
+    "H5": {
+      "estimate": -4503599630334696.0,
+      "ci": [
+        NaN,
+        NaN
+      ],
+      "p": NaN,
+      "p_holm": NaN,
+      "passed": false,
+      "note": "flip at k=3: {\"en\": 0.286, \"ur\": 0.0}"
+    },
+    "G6": {
+      "estimate": NaN,
+      "ci": [
+        NaN,
+        NaN
+      ],
+      "p": NaN,
+      "p_holm": NaN,
+      "passed": false,
+      "note": "mean relative reduction by tier: {\"T0\": NaN, \"T1\": 1.0}"
+    }
+  },
+  "figures": [
+    "fig1_hero.png",
+    "fig_bench_dose.png",
+    "fig_cost.png",
+    "fig_urdu.png"
+  ]
+}

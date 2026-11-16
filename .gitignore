@@ -230,3 +230,6 @@ results/raw/
 
 # built scorecard (rebuild with: python site/build.py)
 site/dist/
+
+# raw-log hand-off archives (logs never go in git, AGENTS.md rule 6)
+*.zip

@@ -66,4 +66,4 @@ def test_headline_from_results(tmp_path):
     assert h["flip3_en"] == pytest.approx(0.55) and h["g5_guard"] == pytest.approx(0.2)
     assert h["k50_min"] == 4.2 and h["label_ratio"] == 1.8 and h["clean_cost"] == 0.01
     page = site_build.scorecard(h)
-    assert "55%" in page and "×1.80" in page and "1.0 pts" in page and "Results pending" not in page
+    assert "20%" in page and "×1.80" in page and "1.0 pts" in page and "Results pending" not in page

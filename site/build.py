@@ -31,14 +31,16 @@ DEMO_QIDS = ["pl-support-001", "pl-support-001-ur"]  # fictional brand used in t
 T = {
     "en": {"title": "Planted: do AI search agents count pages or sources?", "pending": "Results pending: the experiments have not been run yet.",
            "lead": "When several search results repeat a claim, AI search agents tend to believe it, even if all the pages come from one campaign. This page summarises how often that happens and how much our fix (Guard) helps.",
-           "flip": "Answers flipped by planting 3 of 10 results", "k50": "Planted pages needed to flip half the answers (k50)",
+           "flip": "Answers flipped by planting 3 of 10 results", "correct3": "Correct answers left when 3 of 10 results are planted (well-covered facts)",
+           "void": "Data-void answers flipped by a single planted page", "k50": "Planted pages needed to flip half the answers (k50)",
            "label": "Pages needed with a wire label vs a propaganda label (k50 ratio)", "guard": "Flip rate with Guard (5 planted pages)",
            "cost": "Accuracy cost of Guard on clean results", "how": "How to read this", "method": "Method",
            "method_text": "Fictional questions and websites (no real outlets or brands). Ten search results per question; we vary how many repeat a planted answer. Every rate has a 95% confidence interval. Hypotheses and thresholds were registered before the main run.",
            "viewer": "See recorded examples", "lang": "اردو", "na": "not measured yet"},
     "ur": {"title": "پلانٹڈ: کیا اے آئی سرچ ایجنٹ صفحات گنتے ہیں یا ذرائع؟", "pending": "نتائج زیرِ التوا: تجربات ابھی نہیں کیے گئے۔",
            "lead": "جب کئی سرچ نتائج ایک ہی دعویٰ دہراتے ہیں تو اے آئی سرچ ایجنٹ اکثر اسے سچ مان لیتے ہیں، چاہے تمام صفحات ایک ہی مہم سے آئے ہوں۔ یہ صفحہ بتاتا ہے کہ ایسا کتنی بار ہوتا ہے اور ہمارا حل (گارڈ) کتنی مدد کرتا ہے۔",
-           "flip": "دس میں سے تین نتائج بدلنے سے پلٹ جانے والے جوابات", "k50": "آدھے جوابات پلٹنے کے لیے درکار جعلی صفحات (k50)",
+           "flip": "دس میں سے تین نتائج بدلنے سے پلٹ جانے والے جوابات", "correct3": "دس میں سے تین جعلی نتائج کے بعد باقی درست جوابات (معروف حقائق)",
+           "void": "صرف ایک جعلی صفحے سے پلٹنے والے ڈیٹا وائڈ جوابات", "k50": "آدھے جوابات پلٹنے کے لیے درکار جعلی صفحات (k50)",
            "label": "وائر لیبل بمقابلہ پروپیگنڈا لیبل: درکار صفحات کا تناسب (k50)", "guard": "گارڈ کے ساتھ جوابات پلٹنے کی شرح (پانچ جعلی صفحات)",
            "cost": "صاف نتائج پر گارڈ کی درستی کی قیمت", "how": "اسے کیسے پڑھیں", "method": "طریقۂ کار",
            "method_text": "فرضی سوالات اور ویب سائٹس (کوئی حقیقی ادارہ یا برانڈ نہیں)۔ ہر سوال کے دس سرچ نتائج؛ ہم بدلتے ہیں کہ ان میں سے کتنے ایک جعلی جواب دہراتے ہیں۔ ہر شرح کے ساتھ 95 فیصد اعتماد کا وقفہ ہے۔ مفروضے اور حدیں مرکزی تجربے سے پہلے رجسٹر کی گئیں۔",
@@ -84,6 +86,17 @@ def headline(results: Path) -> dict | None:
             if len(g):
                 n = g["n"].sum()
                 out[f"flip3_{lang}"] = float((g["flip"] * g["n"]).sum() / n)
+        if "regime" in r:
+            a = r[(r["arm"] == "A") & (r["lang"] == "en") & (r["defense"] == "none")]
+            if len(a) and "model" in a:  # the model that ran the most arm-A episodes (the full grid)
+                main = a.groupby("model")["n"].sum().idxmax()
+                a = a[a["model"] == main]
+                out["main_model"] = main
+            for key, regime, k, col in (("correct0", "known", 0, "correct"), ("correct3", "known", 3, "correct"),
+                                        ("void1", "void", 1, "flip")):
+                c = a[(a["regime"] == regime) & (a["k"] == k)]
+                if len(c):
+                    out[key] = float((c[col] * c["n"]).sum() / c["n"].sum())
         g = r[(r["arm"] == "G") & (r["k"] == 5) & (r["tier"] == "T1")]
         for d in ("none", "guard"):
             gg = g[g["defense"] == d]
@@ -93,6 +106,8 @@ def headline(results: Path) -> dict | None:
     if k.exists():
         kd = pd.read_csv(k)
         known = kd[kd["regime"] == "known"]
+        if "n" in known and (known["n"] >= 50).any():  # ignore k50s fitted on a handful of runs
+            known = known[known["n"] >= 50]
         if len(known):
             out["k50_min"] = float(known["k50"].replace([float("inf")], float("nan")).min())
     hyp = summary.get("hypotheses", {})
@@ -113,10 +128,13 @@ def scorecard(h: dict | None) -> str:
     for lang in ("en", "ur"):
         t = T[lang]
         body = f'<div class="pending">{html.escape(t["pending"])}</div>' if h is None else '<div class="grid">' + "".join([
-            card("flip", _num(h.get(f"flip3_{lang}"), True), t),
+            card("correct3", None if h.get("correct3") is None else
+                 f"{_num(h['correct3'], True)} (from {_num(h.get('correct0'), True) or '?'})", t),
+            card("void", _num(h.get("void1"), True), t),
             card("k50", _num(h.get("k50_min")), t),
             card("label", None if h.get("label_ratio") is None else f"×{h['label_ratio']:.2f}", t),
-            card("guard", _num(h.get("g5_guard"), True), t),
+            card("guard", None if h.get("g5_guard") is None else
+                 f"{_num(h['g5_guard'], True)} (none: {_num(h.get('g5_none'), True) or '?'})", t),
             card("cost", None if _num(h.get("clean_cost")) is None else f"{100 * h['clean_cost']:.1f} pts", t),
         ]) + "</div>"
         pages.append(f'''<section id="{lang}" lang="{lang}" dir="{'rtl' if lang == 'ur' else 'ltr'}" {'hidden' if lang == 'ur' else ''}>
